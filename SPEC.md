@@ -112,7 +112,7 @@ flowchart TD
     selfDI -- Generate and Extend --> voucher
     netConfig --> ready
     voucher --> ready@{ shape: delay, label: "Ready" }
-    
+
     end
 
     subgraph Onboarding
@@ -177,7 +177,7 @@ All characteristics are `CBOR` encoded. See the [CBOR schemas](#3-cbor) section 
 | ----------------------------------- |
 | 0000210-32bd-4590-a184-b046cb3955ee |
 
-| Field | Data Type | Size (octets) |      Properties      |                           Description                           |
+| Field | Data Type | Size (octets) |      Properties      | Description                                                     |
 | ----- | :-------: | :-----------: | :------------------: | --------------------------------------------------------------- |
 | CBOR  |   uint8   |   variable    | WriteWithoutResponse | [CBOR Encoded Network Configuration](#31-network-configuration) |
 
@@ -197,7 +197,7 @@ All characteristics are `CBOR` encoded. See the [CBOR schemas](#3-cbor) section 
 | ----------------------------------- |
 | 0000220-32bd-4590-a184-b046cb3955ee |
 
-| Field | Data Type | Size (octets) |      Properties      |                                  Description                                  |
+| Field | Data Type | Size (octets) |      Properties      | Description                                                                   |
 | ----- | :-------: | :-----------: | :------------------: | ----------------------------------------------------------------------------- |
 | CBOR  |   uint8   |   variable    | WriteWithoutResponse | [CBOR Encoded Device Manager Configuration](#32-device-manager-configuration) |
 
@@ -221,13 +221,13 @@ Once polling has been initiated, UEFI will first apply the Network Configuration
 | ----------------------------------- |
 | 0000230-32bd-4590-a184-b046cb3955ee |
 
-| Field | Data Type | Size (octets) | Properties |    Description     |
-| ----- | :-------: | :-----------: | :--------: | ------------------ |
+| Field | Data Type | Size (octets) | Properties | Description                     |
+| ----- | :-------: | :-----------: | :--------: | ------------------------------- |
 | CBOR  |   uint8   |   variable    |    Read    | [CBOR Encoded State](#35-state) |
 
 #### 2.4 Start
 
-Request UEFI to start the onboarding sequence. This may be called to retry the sequence after a failure.  UEFI will discard any bytes received for this characteristic, so a client SHOULD write 0 bytes.
+Request UEFI to start the onboarding sequence. This may be called to retry the sequence after a failure. UEFI will discard any bytes received for this characteristic, so a client SHOULD write 0 bytes.
 
 | Characteristic UUID                 |
 | ----------------------------------- |
@@ -247,7 +247,7 @@ Characteristics that may be read for additional troubleshooting or context.
 | ----------------------------------- |
 | 0002501-32bd-4590-a184-b046cb3955ee |
 
-| Field | Data Type | Size (octets) | Properties |                        Description                         |
+| Field | Data Type | Size (octets) | Properties | Description                                                |
 | ----- | :-------: | :-----------: | :--------: | ---------------------------------------------------------- |
 | CBOR  |   uint8   |   variable    |    Read    | [CBOR Encoded Network Properties](#341-network-properties) |
 
@@ -282,7 +282,7 @@ Reading this characteristic will trigger UEFI to execute a series of checks and 
 
 #### 2.6 FDO Voucher
 
-After receiving a device manager configuration the FDO self-Device-Initialization (self-DI) will be performed.  The device will generate its own ephemeral manufacturer key an automatically extend the voucher with the Owner Service Public Key.
+After receiving a device manager configuration the FDO self-Device-Initialization (self-DI) will be performed. The device will generate its own ephemeral manufacturer key an automatically extend the voucher with the Owner Service Public Key.
 
 If the voucher characteristic is read prior to the voucher creation process completion, the response will include an error tag.
 
@@ -292,7 +292,7 @@ The structure of the voucher is defined directly in the [FDO 1.1 Voucher][vouche
 | ----------------------------------- |
 | 0000230-32bd-4590-a184-b046cb3955ee |
 
-| Field | Data Type | Size (octets) | Properties |       Description        |
+| Field | Data Type | Size (octets) | Properties | Description              |
 | ----- | :-------: | :-----------: | :--------: | ------------------------ |
 | CBOR  |   uint8   |   variable    |    Read    | CBOR encoded FDO Voucher |
 
@@ -408,11 +408,13 @@ NetworkState = {
 
 The state reflects the current step of execution as represented by a state code.
 
+```cddl
 Status = {
     code: uint16
 }
+```
 
-| Code  |                     Description                      |
+| Code  | Description                                          |
 | :---: | ---------------------------------------------------- |
 |   0   | Awaiting configurations                              |
 |  10   | Voucher ready                                        |
