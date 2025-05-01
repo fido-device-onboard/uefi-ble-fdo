@@ -169,7 +169,12 @@ TODO: Register SIG attribute type for UEFI BLE-FDO Onboarding
 
 From a design principle, there is a design correlation between RPCs and characteristics. For example, a `GetNetworkConfig` RPC correlates to a `NetworkConfig` characteristic.
 
-All characteristics are `CBOR` encoded. See the [CBOR schemas](#3-cbor) section for data models.
+Many characteristics are `CBOR` encoded. See the [CBOR schemas](#3-cbor) section for data models.
+
+<a name="big-read"></a>
+Some characteristics contain variable-length CBOR-encoded data that may exceed the maximum attribute size of 512 octets. In order to "read" these attributes, set the Client Characteristic Configuration Descriptor (CCCD) to 0x0001. Because the value is a single deterministic-length CBOR item, it is possible to know when all data has been received by notifications. In order to "read" the characteristic again, set the CCCD to 0x0000 and then 0x0001.
+
+> TODO: Figure out if most stacks have a feature for server callbacks when CCCD value changes
 
 #### 2.1 Network Configuration
 
@@ -221,9 +226,9 @@ Once polling has been initiated, UEFI will first apply the Network Configuration
 | ----------------------------------- |
 | 0000230-32bd-4590-a184-b046cb3955ee |
 
-| Field | Data Type | Size (octets) | Properties | Description                     |
-| ----- | :-------: | :-----------: | :--------: | ------------------------------- |
-| CBOR  |   uint8   |   variable    |    Read    | [CBOR Encoded State](#35-state) |
+| Field | Data Type | Size (octets) |       Properties        | Description                     |
+| ----- | :-------: | :-----------: | :---------------------: | ------------------------------- |
+| CBOR  |   uint8   |   variable    | Notify[\*\*](#big-read) | [CBOR Encoded State](#35-state) |
 
 #### 2.4 Start
 
@@ -247,9 +252,9 @@ Characteristics that may be read for additional troubleshooting or context.
 | ----------------------------------- |
 | 0002501-32bd-4590-a184-b046cb3955ee |
 
-| Field | Data Type | Size (octets) | Properties | Description                                                |
-| ----- | :-------: | :-----------: | :--------: | ---------------------------------------------------------- |
-| CBOR  |   uint8   |   variable    |    Read    | [CBOR Encoded Network Properties](#341-network-properties) |
+| Field | Data Type | Size (octets) |       Properties        | Description                                                |
+| ----- | :-------: | :-----------: | :---------------------: | ---------------------------------------------------------- |
+| CBOR  |   uint8   |   variable    | Notify[\*\*](#big-read) | [CBOR Encoded Network Properties](#341-network-properties) |
 
 #### 2.5.2 Network Diagnostics
 
@@ -292,9 +297,9 @@ The structure of the voucher is defined directly in the [FDO 1.1 Voucher][vouche
 | ----------------------------------- |
 | 0000230-32bd-4590-a184-b046cb3955ee |
 
-| Field | Data Type | Size (octets) | Properties | Description              |
-| ----- | :-------: | :-----------: | :--------: | ------------------------ |
-| CBOR  |   uint8   |   variable    |    Read    | CBOR encoded FDO Voucher |
+| Field | Data Type | Size (octets) |       Properties        | Description              |
+| ----- | :-------: | :-----------: | :---------------------: | ------------------------ |
+| CBOR  |   uint8   |   variable    | Notify[\*\*](#big-read) | CBOR encoded FDO Voucher |
 
 ### 3. CBOR
 
