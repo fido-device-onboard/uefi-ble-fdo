@@ -97,7 +97,7 @@ stateDiagram-v2
 
 ### Flows
 
-> [!Caution]
+> [!CAUTION]
 > The voucher is created using properties from the _Device Manager Config_, so any changes to the configuration will result in a new voucher.
 
 ```mermaid
@@ -171,10 +171,13 @@ From a design principle, there is a design correlation between RPCs and characte
 
 Many characteristics are `CBOR` encoded. See the [CBOR schemas](#3-cbor) section for data models.
 
-<a name="big-read"></a>
-Some characteristics contain variable-length CBOR-encoded data that may exceed the maximum attribute size of 512 octets. In order to "read" these attributes, set the Client Characteristic Configuration Descriptor (CCCD) to 0x0001. Because the value is a single deterministic-length CBOR item, it is possible to know when all data has been received by notifications. In order to "read" the characteristic again, set the CCCD to 0x0000 and then 0x0001.
+> [!IMPORTANT]
+>
+> #### Payload Limitations
+>
+> Some characteristics contain variable-length CBOR-encoded data that may exceed the maximum attribute size of 512 octets. In order to "read" these attributes, set the Client Characteristic Configuration Descriptor (CCCD) to 0x0001. Because the value is a single deterministic-length CBOR item, it is possible to know when all data has been received by notifications. In order to "read" the characteristic again, set the CCCD to 0x0000 and then 0x0001.
 
-> TODO: Figure out if most stacks have a feature for server callbacks when CCCD value changes
+TODO: Figure out if most stacks have a feature for server callbacks when CCCD value changes
 
 #### 2.1 Network Configuration
 
@@ -226,9 +229,11 @@ Once polling has been initiated, UEFI will first apply the Network Configuration
 | ----------------------------------- |
 | 0000230-32bd-4590-a184-b046cb3955ee |
 
-| Field | Data Type | Size (octets) |       Properties        | Description                     |
-| ----- | :-------: | :-----------: | :---------------------: | ------------------------------- |
-| CBOR  |   uint8   |   variable    | Notify[\*\*](#big-read) | [CBOR Encoded State](#35-state) |
+| Field | Data Type | Size (octets) | Properties | Description                     |
+| ----- | :-------: | :-----------: | :--------: | ------------------------------- |
+| CBOR  |   uint8   |   variable    |  Notify¹   | [CBOR Encoded State](#35-state) |
+
+> ¹ See [payload limitations](#payload-limitations)
 
 #### 2.4 Start
 
@@ -252,9 +257,11 @@ Characteristics that may be read for additional troubleshooting or context.
 | ----------------------------------- |
 | 0002501-32bd-4590-a184-b046cb3955ee |
 
-| Field | Data Type | Size (octets) |       Properties        | Description                                                |
-| ----- | :-------: | :-----------: | :---------------------: | ---------------------------------------------------------- |
-| CBOR  |   uint8   |   variable    | Notify[\*\*](#big-read) | [CBOR Encoded Network Properties](#341-network-properties) |
+| Field | Data Type | Size (octets) | Properties | Description                                                |
+| ----- | :-------: | :-----------: | :--------: | ---------------------------------------------------------- |
+| CBOR  |   uint8   |   variable    |  Notify¹   | [CBOR Encoded Network Properties](#341-network-properties) |
+
+> ¹ See [payload limitations](#payload-limitations)
 
 #### 2.5.2 Network Diagnostics
 
@@ -297,9 +304,11 @@ The structure of the voucher is defined directly in the [FDO 1.1 Voucher][vouche
 | ----------------------------------- |
 | 0000230-32bd-4590-a184-b046cb3955ee |
 
-| Field | Data Type | Size (octets) |       Properties        | Description              |
-| ----- | :-------: | :-----------: | :---------------------: | ------------------------ |
-| CBOR  |   uint8   |   variable    | Notify[\*\*](#big-read) | CBOR encoded FDO Voucher |
+| Field | Data Type | Size (octets) | Properties | Description              |
+| ----- | :-------: | :-----------: | :--------: | ------------------------ |
+| CBOR  |   uint8   |   variable    |  Notify¹   | CBOR encoded FDO Voucher |
+
+> ¹ See [payload limitations](#payload-limitations)
 
 ### 3. CBOR
 
@@ -328,15 +337,15 @@ A client (BT central) may send zero or many authentication protocols to the serv
 
 If multiple authentication types are received, the server shall attempt using the method in the following order:
 
-| Order | Type | Protocol Name         | CDDL       | Description                                                     |
-| :---: | :--: | --------------------- | ---------- | --------------------------------------------------------------- |
-|  1.   | 0x01 | EAP-TLS               | EAPTLS     |                                                                 |
-|  2.   | 0x02 | EAP-TTLS              | EAPTLS     | Tunneled Transport Layer Security                               |
-|  3.   | 0x03 | EAP-PEAP GTC          | EAPPEAPGTC | Generic Token Card, one-time password                           |
-|  4.   | 0x04 | EAP-PEAP PAP          | EAPPEAPPAP | Password Authentication Protocol                                |
-|  5.   | 0x05 | EAP-PEAP EAP-MSCHAPv2 |            | Combination of EAP and MSCHAPv2                                 |
-|  6.   | 0x06 | EAP-PEAP MSCHAPv2     |            | Microsoft Challenge Handshake Authentication Protocol Version 2 |
-|  7.   | 0x09 | PSK                   | PSK        | Pre-shared Key, such as WPA2-Personal                           |
+| Order | Type  | Protocol Name         | CDDL       | Description                                                     |
+| :---: | :---: | --------------------- | ---------- | --------------------------------------------------------------- |
+|  1.   | 0x01  | EAP-TLS               | EAPTLS     |                                                                 |
+|  2.   | 0x02  | EAP-TTLS              | EAPTLS     | Tunneled Transport Layer Security                               |
+|  3.   | 0x03  | EAP-PEAP GTC          | EAPPEAPGTC | Generic Token Card, one-time password                           |
+|  4.   | 0x04  | EAP-PEAP PAP          | EAPPEAPPAP | Password Authentication Protocol                                |
+|  5.   | 0x05  | EAP-PEAP EAP-MSCHAPv2 |            | Combination of EAP and MSCHAPv2                                 |
+|  6.   | 0x06  | EAP-PEAP MSCHAPv2     |            | Microsoft Challenge Handshake Authentication Protocol Version 2 |
+|  7.   | 0x09  | PSK                   | PSK        | Pre-shared Key, such as WPA2-Personal                           |
 
 ```cddl
 AuthProtocol = {
@@ -388,12 +397,14 @@ HostsEntry = {
 
 ```cddl
 DeviceManager = {
-    url:    string       ; Device manager scheme name string and URI as a UTF-8 string
-    pubkey: bytes        ; DER encoded X.509 Owner Service Public Key
+    url:     string      ; Device manager scheme name string and URI as a UTF-8 string
+    pubkey:  bytes       ; DER encoded X.509 Owner Service Elliptic Curve Public Key
+    anchors: bytes       ; DER encoded X.509 TLS root certificate authority trust anchors
 }
 ```
 
-TODO: PQC key type for pubkey
+> [!WARNING]
+> Elliptic Curve public keys are not post-quantum safe.  The public key type will eventually be updated to use PQC algorithms.
 
 #### 3.4 Diagnostics
 
