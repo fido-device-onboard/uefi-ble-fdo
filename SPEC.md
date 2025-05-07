@@ -35,8 +35,8 @@ Operational benefits are focused around simplicity and a reduction in Total Cost
 
 ```mermaid
 sequenceDiagram
-    participant ue as Smartphone
-    participant uefi as UEFI
+    participant ue as Smartphone<br/>(GAP Central)<br/>(GATT Server)
+    participant uefi as UEFI<br/>(GAP Peripheral)<br/>(GATT Client)
     participant dm as Device Manager
 
     autonumber
@@ -50,17 +50,27 @@ sequenceDiagram
     ue -) uefi: Pair<br>{Just Works security}
     note over ue, uefi: User can optionally confirm the serial<br/>number printed on the system<br/>and displayed in on their smartphone
 
-    ue -) uefi: [BLE] Write<br/>{DeviceManagerConfig}
-    uefi -) ue: [BLE] Read<br/>{Voucher}
-    ue ->>+ dm: {Voucher}
+    
+
+    uefi ->>+ ue: [BLE] Get Char 2.2
+    ue -->>- uefi: {DeviceManagerConfig}
+
+    uefi ->>+ ue: [BLE] Set Char 2.6
+    note over ue,uefi: CBOR length provided within first 9 bytes
+    ue -->>- uefi: {Voucher}
+
+    ue ->>+ dm: [TCP] {Voucher}
     dm -->>- ue: {Accepted}
 
-    ue -) uefi: [BLE] Write<br/>{NetworkConfig}
+    uefi ->>+ ue: [BLE] Get Char 2.1
+    ue -->>- uefi: {NetworkConfig}
+
+    uefi ->>+ ue: [BLE] Get Char 2.7
+    ue -->>- uefi: {NotificationConfig}
 
     par
-        loop Until Completion State
-        ue ->>+ uefi: [BLE] Read<br/>{State}
-        uefi -->>- ue: {Processing, Success, or Error}
+        loop Every notification interval
+        uefi -) ue: [BLE] Write Char 2.3<br/>{State}
     end
      and UEFI Protocol Requests
         uefi ->> uefi: Parse and apply network configuration
@@ -84,15 +94,14 @@ The BLE sequence has finite states that can be identified by reading the `State`
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Waiting: Pair
+    [*] --> Initializing: Pair
 
-    Waiting --> Ready: Read Voucher
-    Ready --> Processing: Read State
+    Initializing --> Processing: Ready State
     state err <<choice>>
     Processing --> err: Exit
     err --> Errored: Error
     err --> [*]: Success
-    Errored --> Waiting: Reset Config(s)
+    Errored --> Initializing: Restart
 ```
 
 ### Flows
@@ -103,45 +112,40 @@ stateDiagram-v2
 ```mermaid
 flowchart TD
     subgraph Configs and Voucher
-    central@{ shape: lean-r, label: "BLE Central" }
-    central -. Read<br/>(looping) .- state@{ shape: doc, label: "State" }
-    central -- Write --- netConfig@{ shape: doc, label: "Network<br/>Configuration" }
-    central -- Write --- devmgrConfig@{ shape: doc, label: "Device Manager<br/>Configuration" }
-    devmgrConfig --> selfDI[Self-DI]
-    voucher@{shape: lin-doc, label: "Voucher"} -- Read --- central
-    selfDI -- Generate and Extend --> voucher
+    central@{ shape: lean-r, label: "UEFI" }
+    init@{ shape: delay, label: "Init" }
+    central --> init
+    central -- Send<br/>(looping) --> state@{ shape: lin-doc, label: "State" }
+    init -- Receive --- netConfig@{ shape: doc, label: "Network<br/>Configuration" }
+    init -- Receive --- devmgrConfig@{ shape: doc, label: "Device Manager<br/>Configuration" }
+    devmgrConfig --> selfDI[Generate and Extend Voucher]
+    %% voucher@{shape: lin-doc, label: "Voucher"} -- Write --- smartphone
     netConfig --> ready
-    voucher --> ready@{ shape: delay, label: "Ready" }
+    selfDI -- After Sent--> ready@{ shape: delay, label: "Ready" }
+    selfDI -- Send --> voucher@{shape: lin-doc, label: "Voucher"}
 
     end
 
     subgraph Onboarding
     %% ready -.- state@{ shape: doc, label: "State" }
-    ready -.- start@{ shape: doc, label: "Start" }
-    central -- Write --> start
-    netInit[State: Processing<br/>Stage: Network Init] --> fdoConnect[State: Processing<br/>Stage: FDO TO2]
+    ready -.- netinit[State: Processing<br/>Stage: Network Init] --> fdoConnect[State: Processing<br/>Stage: FDO TO2]
 
     fdoConnect --> connected@{ shape: diamond, label: "Success" }
     connected -- Yes --> fdoXFER[State: Processing<br/>Stage: FDO FSIM]
     connected -- No -->error@{ shape: dbl-circ, label: "Error" }
-    error -- Write --> rnetConfig@{ shape: doc, label: "Reset Network Configuration" }
-    rnetConfig --> resetNetCfg@{ shape: braces, label: "Restart flow back to<br/>Network Configuration" }
 
     fdoXFER --> transferred@{ shape: diamond, label: "Success" }
     transferred -- Yes --> success@{ shape: dbl-circ, label: "Success" }
     transferred -- No -->error
 
-    error -- Write --> rdevmgrConfig@{ shape: doc, label: "Reset Device Manager Configuration" }
-    rdevmgrConfig  --> resetDevMgrCfg@{ shape: braces, label: "Restart flow back to<br/>Device Manager Configuration" }
-
-    error -- Write --> start
-    start --> netInit
+    error --> init
 
     end
-
 ```
 
 ## GATT Specification
+
+This specification follows the normative definitions in the [GATT Specification Supplement](https://www.bluetooth.com/specifications/specs/gatt-specification-supplement-5/).
 
 ### Attribute Protocol
 
@@ -176,8 +180,20 @@ Many characteristics are `CBOR` encoded. See the [CBOR schemas](#3-cbor) section
 > #### Payload Limitations
 >
 > Some characteristics contain variable-length CBOR-encoded data that may exceed the maximum attribute size of 512 octets. In order to "read" these attributes, set the Client Characteristic Configuration Descriptor (CCCD) to 0x0001. Because the value is a single deterministic-length CBOR item, it is possible to know when all data has been received by notifications. In order to "read" the characteristic again, set the CCCD to 0x0000 and then 0x0001.
+>
+> Sending data that exceeds the MTU can be optimally achienved using L2CAP, however this eliminates common mobile devices such as those from Apple.  Accordingly, this specification uses chunking within the scope of GATT.
 
 TODO: Figure out if most stacks have a feature for server callbacks when CCCD value changes
+
+#### Control Points
+
+Writing a single byte op code to a Control Point characteristic informs the server that it should start sending the associated characteristic.  This allows the server to send large payloads as notifications, which will maximize the throughput for GATT based data objects.
+
+This control point will stop any prior notifications for the associated characteristic.
+
+| Op Code | Description            |
+| :-----: | ---------------------- |
+|    1    | Start with first chunk |
 
 #### 2.1 Network Configuration
 
@@ -185,19 +201,21 @@ TODO: Figure out if most stacks have a feature for server callbacks when CCCD va
 | ----------------------------------- |
 | 0000210-32bd-4590-a184-b046cb3955ee |
 
-| Field | Data Type | Size (octets) |      Properties      | Description                                                     |
-| ----- | :-------: | :-----------: | :------------------: | --------------------------------------------------------------- |
-| CBOR  |   uint8   |   variable    | WriteWithoutResponse | [CBOR Encoded Network Configuration](#31-network-configuration) |
+| Data Type | Size (octets) | Properties | Description                                                     |
+| :-------: | :-----------: | :--------: | --------------------------------------------------------------- |
+|   CBOR    |   variable    |  Notify¹   | [CBOR Encoded Network Configuration](#31-network-configuration) |
 
-#### 2.1.1 Reset Network Configuration
+#### 2.1.1 Network Configuration Control Point
+
+This characteristic is the [Control Point](#control-points) for the [Network Configuration](#21-network-configuration).
 
 | Characteristic UUID                  |
 | ------------------------------------ |
 | 00000211-32bd-4590-a184-b046cb3955ee |
 
-| Field                       | Data Type | Size (octets) | Properties | Description                 |
-| --------------------------- | :-------: | :-----------: | :--------: | --------------------------- |
-| Reset Network Configuration |   uint8   |       1       |   Write    | Clear network configuration |
+| Data Type | Size (octets) | Properties | Description                |
+| :-------: | :-----------: | :--------: | -------------------------- |
+|   uint8   |       1       |   Write    | Notification control point |
 
 #### 2.2 Device Manager Configuration
 
@@ -205,51 +223,114 @@ TODO: Figure out if most stacks have a feature for server callbacks when CCCD va
 | ----------------------------------- |
 | 0000220-32bd-4590-a184-b046cb3955ee |
 
-| Field | Data Type | Size (octets) |      Properties      | Description                                                                   |
-| ----- | :-------: | :-----------: | :------------------: | ----------------------------------------------------------------------------- |
-| CBOR  |   uint8   |   variable    | WriteWithoutResponse | [CBOR Encoded Device Manager Configuration](#32-device-manager-configuration) |
+| Data Type | Size (octets) | Properties | Description                                                                   |
+| :-------: | :-----------: | :--------: | ----------------------------------------------------------------------------- |
+|   CBOR    |   variable    |  Notify¹   | [CBOR Encoded Device Manager Configuration](#32-device-manager-configuration) |
 
-#### 2.2.1 Reset Device Manager Configuration
+#### 2.2.1 Device Manager Configuration Control Point
+
+This characteristic is the [Control Point](#control-points) for the [Device Manager Configuration](#22-device-manager-configuration).
 
 | Characteristic UUID                  |
 | ------------------------------------ |
 | 00000221-32bd-4590-a184-b046cb3955ee |
 
-| Field                              | Data Type | Size (octets) | Properties | Description                 |
-| ---------------------------------- | :-------: | :-----------: | :--------: | --------------------------- |
-| Reset Device Manager Configuration |   uint8   |       1       |   Write    | Clear network configuration |
+| Data Type | Size (octets) | Properties | Description                |
+| :-------: | :-----------: | :--------: | -------------------------- |
+|   uint8   |       1       |   Write    | Notification control point |
 
 #### 2.3 State
 
-The Network Configuration and Device Manager Configuration may be delivered out of order and may be arbitrarily reset. UEFI will not attempt to initiate an onboarding request until a poll of the `State` characteristic has been initiated to view the status of the request.
+UEFI will first apply the Network Configuration and then attempt to onboard to the device manager using the Device Manager configuration. During the execution of the sequence the current state of execution will be sent to the BLE Central device. In the event of an error, UEFI will restart the entire sequence.
 
-Once polling has been initiated, UEFI will first apply the Network Configuration and then attempt to onboard to the device manager using the Device Manager configuration. UEFI will either return success or an error that can occur at any point of the sequence. UEFI MAY return a status indicating that a request is still in process. UEFI will NOT retry any steps of the sequence. In the event of an error, the client MAY issue a [Start](#24-start) or the client MAY reset and write the Network and/or Device Manager configuration with any required corrections before issuing a [Start](#24-start).
+For additional context and detail about current and prior states, use the [State Diagnostics](#253-state-diagnostics) characteristic.
 
 | Characteristic UUID                 |
 | ----------------------------------- |
 | 0000230-32bd-4590-a184-b046cb3955ee |
 
-| Field | Data Type | Size (octets) | Properties | Description                     |
-| ----- | :-------: | :-----------: | :--------: | ------------------------------- |
-| CBOR  |   uint8   |   variable    |  Notify¹   | [CBOR Encoded State](#35-state) |
+| Data Type | Size (octets) | Properties | Description |
+| :-------: | :-----------: | ---------- | ----------- |
+|  uint16   |      1-2      | Write      | State Code  |
 
-> ¹ See [payload limitations](#payload-limitations)
+|  Code   | Description                                          |
+| :-----: | ---------------------------------------------------- |
+|    0    | Awaiting configurations                              |
+|   10    | Voucher ready                                        |
+|   99    | Awaiting Start                                       |
+|   100   | Parsing configurations                               |
+|   200   | Applying Network configuration                       |
+|   201   | Authenticating to Network                            |
+|   202   | Assigning IP address                                 |
+|   300   | Resolving Device Manager name                        |
+|   4XX   | FDO Protocol Messages                                |
+| 460-472 | FDO TO2                                              |
+|   500   | Receiving Host properties from Device Manager        |
+|   600   | Receiving Firmware configuration from Device Manager |
+|   700   | Applying Firmware configuration                      |
+|  1000   | Onboarding Complete                                  |
+|  2XXX   | Network Configuration errors                         |
+|  3XXX   | Device Manager Configuration errors                  |
+|  31XX   | Voucher errors                                       |
+|  3101   | Invalid public key type                              |
+|  3102   | Invalid public key format                            |
+|  4XXX   | Firmware Configuration errors                        |
+|  11XXX  | Error sending host properties to device manager      |
+|  12XXX  | Error retrieving firmware configuration              |
 
-#### 2.4 Start
+##### 2.3.1 State interval
 
-Request UEFI to start the onboarding sequence. This may be called to retry the sequence after a failure. UEFI will discard any bytes received for this characteristic, so a client SHOULD write 0 bytes.
+| Characteristic UUID                 |
+| ----------------------------------- |
+| 0000231-32bd-4590-a184-b046cb3955ee |
+
+| Data Type | Size (octets) | Properties | Description                                                        |
+| :-------: | :-----------: | :--------: | ------------------------------------------------------------------ |
+|  uint16   |       2       |   Write    | Minimum frequency to write state in milliseconds, defaults to 1000 |
+
+#### 2.4 FDO Voucher
+
+After receiving a device manager configuration the FDO self-Device-Initialization (self-DI) will be performed. The device will generate its own ephemeral manufacturer key an automatically extend the voucher with the Owner Service Public Key.
+
+If the voucher characteristic is read prior to the voucher creation process completion, the response will include an error tag.
+
+The structure of the voucher is defined directly in the [FDO 1.1 Voucher][voucher-cddl] normative definition.
 
 | Characteristic UUID                 |
 | ----------------------------------- |
 | 0000240-32bd-4590-a184-b046cb3955ee |
 
-| Field | Data Type | Size (octets) | Properties | Description                 |
-| ----- | :-------: | :-----------: | :--------: | --------------------------- |
-| CBOR  |   uint8   |       1       |   Write    | Restart onboarding sequence |
+| Data Type | Size (octets) | Properties | Description              |
+| :-------: | :-----------: | :--------: | ------------------------ |
+|   CBOR    |   variable    |   Write    | CBOR encoded FDO Voucher |
 
 #### 2.5 Diagnostics
 
-Characteristics that may be read for additional troubleshooting or context.
+Characteristics that may be need for additional troubleshooting or context.  The client (UEFI) will read the diagnostics bitfield during the `initialization` to determine when diagnostics will be sent.
+
+| Characteristic UUID                 |
+| ----------------------------------- |
+| 0002500-32bd-4590-a184-b046cb3955ee |
+
+| Data Type | Size (octets) | Properties | Description       |
+| :-------: | :-----------: | :--------: | ----------------- |
+|  uint16   |       2       |    Read    | Diagnostic opcode |
+
+| Bitfield | Description                    |
+| :------: | ------------------------------ |
+|   0-1    | Network Properties conditions  |
+|   2-3    | Network Diagnostics conditions |
+|   4-5    | State Diagnostics conditions   |
+|   6-15   | Additional Data                |
+
+| Value | Condition           |
+| :---: | ------------------- |
+|  0x0  | Disabled            |
+|  0x1  | On Error            |
+|  0x2  | On Stage Completion |
+|  0x3  | On Interval         |
+
+Interval is defined within _Additional Data_.
 
 #### 2.5.1 Network Properties
 
@@ -257,11 +338,9 @@ Characteristics that may be read for additional troubleshooting or context.
 | ----------------------------------- |
 | 0002501-32bd-4590-a184-b046cb3955ee |
 
-| Field | Data Type | Size (octets) | Properties | Description                                                |
-| ----- | :-------: | :-----------: | :--------: | ---------------------------------------------------------- |
-| CBOR  |   uint8   |   variable    |  Notify¹   | [CBOR Encoded Network Properties](#341-network-properties) |
-
-> ¹ See [payload limitations](#payload-limitations)
+| Data Type | Size (octets) | Properties | Description                                                |
+| :-------: | :-----------: | :--------: | ---------------------------------------------------------- |
+|   CBOR    |   variable    |   Write    | [CBOR Encoded Network Properties](#341-network-properties) |
 
 #### 2.5.2 Network Diagnostics
 
@@ -271,9 +350,9 @@ Reading this characteristic will trigger UEFI to execute a series of checks and 
 | ----------------------------------- |
 | 0002502-32bd-4590-a184-b046cb3955ee |
 
-| Field | Data Type | Size (octets) | Properties | Description         |
-| ----- | :-------: | :-----------: | :--------: | ------------------- |
-| Flag  |  uint64   |       8       |    Read    | Network Diagnostics |
+| Data Type | Properties |         Description          |
+| --------- | :--------: | :--------------------------: |
+| uint64    |   Write    | Network Diagnostics bitfield |
 
 |  Bit  | Category | Description                               |
 | :---: | -------- | ----------------------------------------- |
@@ -292,23 +371,15 @@ Reading this characteristic will trigger UEFI to execute a series of checks and 
 
 > ¹ Destination refers to either the network Proxy or Device Manager, whichever comes first.
 
-#### 2.6 FDO Voucher
-
-After receiving a device manager configuration the FDO self-Device-Initialization (self-DI) will be performed. The device will generate its own ephemeral manufacturer key an automatically extend the voucher with the Owner Service Public Key.
-
-If the voucher characteristic is read prior to the voucher creation process completion, the response will include an error tag.
-
-The structure of the voucher is defined directly in the [FDO 1.1 Voucher][voucher-cddl] normative definition.
+#### 2.5.3 State Diagnostics
 
 | Characteristic UUID                 |
 | ----------------------------------- |
-| 0000230-32bd-4590-a184-b046cb3955ee |
+| 0002503-32bd-4590-a184-b046cb3955ee |
 
-| Field | Data Type | Size (octets) | Properties | Description              |
-| ----- | :-------: | :-----------: | :--------: | ------------------------ |
-| CBOR  |   uint8   |   variable    |  Notify¹   | CBOR encoded FDO Voucher |
-
-> ¹ See [payload limitations](#payload-limitations)
+| Data Type | Size (octets) | Properties | Description                                             |
+| :-------: | :-----------: | :--------: | ------------------------------------------------------- |
+|   CBOR    |   variable    |   Write    | [CBOR Encoded State Diagnostics](#35-state-diagnostics) |
 
 ### 3. CBOR
 
@@ -354,7 +425,7 @@ AuthProtocol = {
 }
 ```
 
-##### 3.1.1 Authentication Protocols
+##### 3.1.2 Authentication Protocols
 
 ```cddl
 EAPTLS = {
@@ -420,41 +491,7 @@ NetworkState = {
 }
 ```
 
-#### 3.5 State
-
-The state reflects the current step of execution as represented by a state code.
-
-```cddl
-Status = {
-    code: uint16
-}
-```
-
-| Code  | Description                                          |
-| :---: | ---------------------------------------------------- |
-|   0   | Awaiting configurations                              |
-|  10   | Voucher ready                                        |
-|  99   | Awaiting Start                                       |
-|  100  | Parsing configurations                               |
-|  200  | Applying Network configuration                       |
-|  201  | Authenticating to Network                            |
-|  202  | Assigning IP address                                 |
-|  300  | Resolving Device Manager name                        |
-|  400  | Performing Device Manager TO2 handshake              |
-|  500  | Receiving Host properties from Device Manager        |
-|  600  | Receiving Firmware configuration from Device Manager |
-|  700  | Applying Firmware configuration                      |
-| 1000  | Onboarding Complete                                  |
-| 2XXX  | Network Configuration errors                         |
-| 3XXX  | Device Manager Configuration errors                  |
-| 31XX  | Voucher errors                                       |
-| 3101  | Invalid public key type                              |
-| 3102  | Invalid public key format                            |
-| 4XXX  | Firmware Configuration errors                        |
-| 11XXX | Error sending host properties to device manager      |
-| 12XXX | Error retrieving firmware configuration              |
-
-#### 3.5.1 Diagnostics
+#### 3.5 State Diagnostics
 
 Additional state context can be retrieved with enhanced state diagnostics.
 
