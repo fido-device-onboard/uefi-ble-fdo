@@ -16,7 +16,7 @@ This document is a UEFI firmware specification for BLE and FIDO Device Onboard (
 1. Exchange secrets securely
 1. Delegate to any device-manager¹ conforming to the onboarding API
 
-All of the above must be achievable while also significantly reducing the required skillets of the person placing the device in its operational location.
+All of the above must be achievable while also significantly reducing the required skill sets of the person placing the device in its operational location.
 
 > ¹ A device manager is responsible for operational management of a system. As an example, a device manager can install or boot an operating system as the first step it performs.
 
@@ -201,7 +201,7 @@ Many characteristics are `CBOR` encoded. See the [CBOR schemas](#3-cbor) section
 >
 > Some characteristics contain variable-length CBOR-encoded data that may exceed the maximum attribute size of 512 octets. In order to "read" these attributes, set the Client Characteristic Configuration Descriptor (CCCD) to 0x0001. Because the value is a single deterministic-length CBOR item, it is possible to know when all data has been received by notifications. In order to "read" the characteristic again, set the CCCD to 0x0000 and then 0x0001.
 >
-> Sending data that exceeds the MTU can be optimally achienved using L2CAP, however this eliminates common mobile devices such as those from Apple.  Accordingly, this specification uses chunking within the scope of GATT.
+> Sending data that exceeds the MTU can be optimally achieved using L2CAP, however this eliminates common mobile devices such as those from Apple.  Accordingly, this specification uses chunking within the scope of GATT.
 
 TODO: Figure out if most stacks have a feature for server callbacks when CCCD value changes
 
