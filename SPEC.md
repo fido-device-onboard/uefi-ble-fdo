@@ -43,8 +43,8 @@ There are three major components that are involved to onboard a device:
 
 ```mermaid
 sequenceDiagram
-    participant ue as Smartphone<br/>(GAP Central)<br/>(GATT Server)
-    participant uefi as UEFI<br/>(GAP Peripheral)<br/>(GATT Client)
+    participant ue as Smartphone<br/>(GAP Central)<br/>(GATT Client)
+    participant uefi as UEFI<br/>(GAP Peripheral)<br/>(GATT Server)
     participant dm as Device Manager
 
     autonumber
@@ -59,28 +59,36 @@ sequenceDiagram
     ue -) uefi: Pair<br>{Just Works security}
     note over ue, uefi: User can optionally confirm the serial<br/>number printed on the system<br/>and displayed in on their smartphone
 
-    uefi ->>+ ue: [BLE] Get Char 2.2
-    ue -->>- uefi: {DeviceManagerConfig}
+    ue ->>+ uefi: [BLE] Set Char 2.2<br/>{DeviceManagerConfig}
+    uefi -->>- ue: {Ack}
 
-    uefi ->>+ ue: [BLE] Set Char 2.6
+    ue ->>+ uefi: [BLE] Get Char 2.6<br/>{Voucher²}
     note over ue,uefi: CBOR length provided within first 9 bytes
-    ue -->>- uefi: {Voucher²}
+    uefi -->>- ue: 
 
     ue ->>+ dm: [TCP] {Voucher²}
     note over ue, dm: Associates device credential with<br/>metadata provided in 'Add Device' step
     dm -->>- ue: {Accepted}
 
-    uefi ->>+ ue: [BLE] Get Char 2.1
-    ue -->>- uefi: {NetworkConfig}
+    ue ->>+ uefi: [BLE] Set Char 2.1<br/>{NetworkConfig}
+    uefi -->>- ue: {Ack}
 
-    uefi ->>+ ue: [BLE] Get Char 2.7
-    ue -->>- uefi: {NotificationConfig}
+    opt
+    ue ->>+ uefi: [BLE] Set Char 2.3.1<br/>{StateInterval}
+    uefi -->>- ue: {Ack}
+    end
+
+    ue ->>+ uefi: [BLE] Set Char 2.5<br/>{DiagnosticsConfig}
+    uefi -->>- ue: {Ack}
 
     par
-        loop Every notification interval
-        uefi -) ue: [BLE] Write Char 2.3<br/>{State}
-    end
-     and UEFI Protocol Requests
+        loop Every {State Interval}<br/>default 1000ms
+        uefi -) ue: [BLE] Notify: Char 2.3<br/>{State}
+        end
+        loop Every {Diagnostic Condition}
+        uefi -) ue: [BLE] Notify: Char 2.5<br/>{Diagnostic Data}
+        end
+    and UEFI Protocol Requests
         uefi ->> uefi: Parse and apply network configuration
         uefi ->>+ dm: [FDO TO2] Connect
         dm -->>- uefi: {Authenticate,Key Exchange}
@@ -128,27 +136,29 @@ flowchart TD
     central -- Send<br/>(looping) --> state@{ shape: lin-doc, label: "State" }
     init -- Receive --- netConfig@{ shape: doc, label: "Network<br/>Configuration" }
     init -- Receive --- devmgrConfig@{ shape: doc, label: "Device Manager<br/>Configuration" }
+    init -- Receive --- notifyConfig@{ shape: doc, label: "Diagnostic Notifications<br/>Configuration" }
     devmgrConfig --> selfDI[Generate and Extend Voucher]
-    %% voucher@{shape: lin-doc, label: "Voucher"} -- Write --- smartphone
     netConfig --> ready
+    notifyConfig --> ready
     selfDI -- After Sent--> ready@{ shape: delay, label: "Ready" }
     selfDI -- Send --> voucher@{shape: lin-doc, label: "Voucher"}
 
     end
 
     subgraph Onboarding
-    %% ready -.- state@{ shape: doc, label: "State" }
     ready -.- netinit[State: Processing<br/>Stage: Network Init] --> fdoConnect[State: Processing<br/>Stage: FDO TO2]
 
     fdoConnect --> connected@{ shape: diamond, label: "Success" }
-    connected -- Yes --> fdoXFER[State: Processing<br/>Stage: FDO FSIM]
+    connected -- Yes --> fsim[State: Processing<br/>Stage: FDO FSIM]
+    
+    fsim --> transferred@{ shape: diamond, label: "Success" }
+    transferred -- Yes --> success@{ shape: dbl-circ, label: "Done" }
+
+    transferred -- No -->error
     connected -- No -->error@{ shape: dbl-circ, label: "Error" }
 
-    fdoXFER --> transferred@{ shape: diamond, label: "Success" }
-    transferred -- Yes --> success@{ shape: dbl-circ, label: "Success" }
-    transferred -- No -->error
-
     error --> init
+    
 
     end
 ```
@@ -264,8 +274,8 @@ For additional context and detail about current and prior states, use the [State
 | 0000230-32bd-4590-a184-b046cb3955ee |
 
 | Data Type | Size (octets) | Properties | Description |
-| :-------: | :-----------: | ---------- | ----------- |
-|  uint16   |      1-2      | Write      | State Code  |
+| :-------: | :-----------: | :--------: | ----------- |
+|  uint16   |      1-2      |    Read    | State Code  |
 
 |  Code   | Description                                          |
 | :-----: | ---------------------------------------------------- |
@@ -314,13 +324,13 @@ The structure of the voucher is defined directly in the [FDO 1.1 Voucher][vouche
 | ----------------------------------- |
 | 0000240-32bd-4590-a184-b046cb3955ee |
 
-| Data Type | Size (octets) | Properties | Description              |
-| :-------: | :-----------: | :--------: | ------------------------ |
-|   CBOR    |   variable    |   Write    | CBOR encoded FDO Voucher |
+| Data Type | Size (octets) | Properties | Description                              |
+| :-------: | :-----------: | :--------: | ---------------------------------------- |
+|   CBOR    |   variable    |    Read    | CBOR encoded [FDO Voucher][voucher-cddl] |
 
 #### 2.5 Diagnostics
 
-Characteristics that may be need for additional troubleshooting or context.  The client (UEFI) will read the diagnostics bitfield during the `initialization` to determine when diagnostics will be sent.
+Characteristics that may be need for additional troubleshooting or context.  The client will write the diagnostics bitfield during the `initialization` to determine when diagnostics will be sent, if at all.
 
 The value of each bitfield grouping defines the conditions for which the diagnostics should be sent.  For example, fields `0-1` for [Network Properties](#251-network-properties), a value of `0x1` means that the network properties will only be sent on error.
 
@@ -332,7 +342,7 @@ All conditions share the same configured interval.  If the interval (bits 6-15) 
 
 | Data Type | Size (octets) | Properties | Description       |
 | :-------: | :-----------: | :--------: | ----------------- |
-|  uint16   |       2       |    Read    | Diagnostic opcode |
+|  uint16   |       2       |   Write    | Diagnostic opcode |
 
 | Bitfield | Description                                                |
 | :------: | ---------------------------------------------------------- |
@@ -341,7 +351,7 @@ All conditions share the same configured interval.  If the interval (bits 6-15) 
 |   4-5    | [State Diagnostics](#253-state-diagnostics) conditions     |
 |   6-15   | Additional Data                                            |
 
-Each of the above conditions may have the one of the following values:
+Each of the above conditions may have the one of the following values to indicate when the diagnostic notification should be sent:
 
 | Value | Condition                |
 | :---: | ------------------------ |
@@ -360,11 +370,13 @@ Interval is defined within _Additional Data_.
 
 | Data Type | Size (octets) | Properties | Description                                                |
 | :-------: | :-----------: | :--------: | ---------------------------------------------------------- |
-|   CBOR    |   variable    |   Write    | [CBOR Encoded Network Properties](#341-network-properties) |
+|   CBOR    |   variable    |  Notify¹   | [CBOR Encoded Network Properties](#341-network-properties) |
+
+> ¹ See [payload limitations](#payload-limitations)
 
 ##### 2.5.2 Network Diagnostics
 
-Reading this characteristic will **trigger UEFI to execute a series of checks** and provide the response as a flag.
+UEFI will execute a series of checks and send a notification at the interval defined in the [Notification Configuration](#25-diagnostics).
 
 | Characteristic UUID                 |
 | ----------------------------------- |
@@ -372,7 +384,7 @@ Reading this characteristic will **trigger UEFI to execute a series of checks** 
 
 | Data Type | Properties |         Description          |
 | --------- | :--------: | :--------------------------: |
-| uint64    |   Write    | Network Diagnostics bitfield |
+| uint64    |   Notify   | Network Diagnostics bitfield |
 
 |  Bit  | Category | Description                                           |
 | :---: | -------- | ----------------------------------------------------- |
@@ -403,7 +415,9 @@ Reading this characteristic will **trigger UEFI to execute a series of checks** 
 
 | Data Type | Size (octets) | Properties | Description                                             |
 | :-------: | :-----------: | :--------: | ------------------------------------------------------- |
-|   CBOR    |   variable    |   Write    | [CBOR Encoded State Diagnostics](#35-state-diagnostics) |
+|   CBOR    |   variable    |  Notify¹   | [CBOR Encoded State Diagnostics](#35-state-diagnostics) |
+
+> ¹ See [payload limitations](#payload-limitations)
 
 ### 3. CBOR
 
