@@ -29,6 +29,14 @@ Operational benefits are focused around simplicity and a reduction in Total Cost
 > [!NOTE]
 > Onboarding, provisioning, and management can be be conflated into the same problem and solution (albeit clearly related). The onboarding capabilities herein are focused on the lower layers, namely establishment of ownership and control for onboarding, before OS installation starts.
 
+## Components
+
+There are three major components that are involved to onboard a device:
+
+- User Equipment (mobile phone, tablet, laptop, etc.)
+- Device to be onboarded
+- Device Manager, such as a cloud hosted service
+
 ## Deployment Sequence
 
 > Reference the [GATT Specification](#gatt-specification) for specific behaviors under error conditions.
@@ -50,16 +58,14 @@ sequenceDiagram
     ue -) uefi: Pair<br>{Just Works security}
     note over ue, uefi: User can optionally confirm the serial<br/>number printed on the system<br/>and displayed in on their smartphone
 
-    
-
     uefi ->>+ ue: [BLE] Get Char 2.2
     ue -->>- uefi: {DeviceManagerConfig}
 
     uefi ->>+ ue: [BLE] Set Char 2.6
     note over ue,uefi: CBOR length provided within first 9 bytes
-    ue -->>- uefi: {Voucher}
+    ue -->>- uefi: {Voucher²}
 
-    ue ->>+ dm: [TCP] {Voucher}
+    ue ->>+ dm: [TCP] {Voucher²}
     dm -->>- ue: {Accepted}
 
     uefi ->>+ ue: [BLE] Get Char 2.1
@@ -88,9 +94,11 @@ sequenceDiagram
     uefi ->> uefi: Boot via enhanced HTTP or payload from FSIM
 ```
 
+> ² See the [FIDO Device Onboard v1.1 voucher specification][voucher-cddl] for more details.
+
 ### States
 
-The BLE sequence has finite states that can be identified by reading the `State` characteristic.
+The BLE sequence implemented in the device UEFI firmware has the following finite states:
 
 ```mermaid
 stateDiagram-v2
@@ -205,6 +213,8 @@ This control point will stop any prior notifications for the associated characte
 | :-------: | :-----------: | :--------: | --------------------------------------------------------------- |
 |   CBOR    |   variable    |  Notify¹   | [CBOR Encoded Network Configuration](#31-network-configuration) |
 
+> ¹ See [payload limitations](#payload-limitations)
+
 #### 2.1.1 Network Configuration Control Point
 
 This characteristic is the [Control Point](#control-points) for the [Network Configuration](#21-network-configuration).
@@ -226,6 +236,8 @@ This characteristic is the [Control Point](#control-points) for the [Network Con
 | Data Type | Size (octets) | Properties | Description                                                                   |
 | :-------: | :-----------: | :--------: | ----------------------------------------------------------------------------- |
 |   CBOR    |   variable    |  Notify¹   | [CBOR Encoded Device Manager Configuration](#32-device-manager-configuration) |
+
+> ¹ See [payload limitations](#payload-limitations)
 
 #### 2.2.1 Device Manager Configuration Control Point
 
@@ -344,7 +356,7 @@ Interval is defined within _Additional Data_.
 
 #### 2.5.2 Network Diagnostics
 
-Reading this characteristic will trigger UEFI to execute a series of checks and provide the response as a flag.
+Reading this characteristic will **trigger UEFI to execute a series of checks** and provide the response as a flag.
 
 | Characteristic UUID                 |
 | ----------------------------------- |
@@ -356,18 +368,21 @@ Reading this characteristic will trigger UEFI to execute a series of checks and 
 
 |  Bit  | Category | Description                               |
 | :---: | -------- | ----------------------------------------- |
-|   0   | IP       | Gateway ICMP Echo response                |
-|   1   | IP       | Destination¹ ICMP Echo response           |
-|   2   | IP       | Destination¹ TCP Ack                      |
-|   3   | DNS      | DNS Server ICMP Echo response             |
-|   4   | DNS      | NTP FQDN: Non-existent domain             |
-|   5   | DNS      | NTP FQDN: No answers in response          |
-|   6   | DNS      | NTP IP address answer received            |
-|   7   | DNS      | Destination¹ FQDN: Non-existent domain    |
-|   8   | DNS      | Destination¹ FQDN: No answers in response |
-|   9   | DNS      | Destination¹ FQDN: response received      |
-|  10   | NTP      | Time synchronized                         |
-| 11-63 | N/A      | Reserved for future use                   |
+|   0   | Physical | Link up                                   |
+|   1   | IP       | Received DHCP response                    |
+|   3   | IP       | IP Address assigned                       |
+|   4   | IP       | Gateway ICMP Echo response                |
+|   5   | IP       | Destination¹ ICMP Echo response           |
+|   6   | DNS      | DNS Server ICMP Echo response             |
+|   7   | DNS      | NTP FQDN: Non-existent domain             |
+|   8   | DNS      | NTP FQDN: No answers in response          |
+|   9   | DNS      | NTP IP address answer received            |
+|   2   | DNS      | Destination¹ FQDN: Non-existent domain    |
+|  10   | DNS      | Destination¹ FQDN: No answers in response |
+|  11   | DNS      | Destination¹ FQDN: response received      |
+|  12   | IP       | Destination¹ TCP Ack                      |
+|  13   | NTP      | Time synchronized                         |
+| 14-63 | N/A      | Reserved for future use                   |
 
 > ¹ Destination refers to either the network Proxy or Device Manager, whichever comes first.
 
