@@ -53,6 +53,7 @@ sequenceDiagram
     note over ue,dm: Device Manager user authentication is non-normative but required.
     dm -->> ue: {Session Token}
     ue ->> dm: Add Device
+    note over ue,dm: Request may include any arbitrary metadata,<br/>such as location or category
     dm -->>- ue: {NetworkConfig,DeviceManagerConfig}
 
     ue -) uefi: Pair<br>{Just Works security}
@@ -66,6 +67,7 @@ sequenceDiagram
     ue -->>- uefi: {Voucher²}
 
     ue ->>+ dm: [TCP] {Voucher²}
+    note over ue, dm: Associates device credential with<br/>metadata provided in 'Add Device' step
     dm -->>- ue: {Accepted}
 
     uefi ->>+ ue: [BLE] Get Char 2.1
@@ -96,7 +98,7 @@ sequenceDiagram
 
 > ² See the [FIDO Device Onboard v1.1 voucher specification][voucher-cddl] for more details.
 
-### States
+## States
 
 The BLE sequence implemented in the device UEFI firmware has the following finite states:
 
@@ -112,7 +114,7 @@ stateDiagram-v2
     Errored --> Initializing: Restart
 ```
 
-### Flows
+## Flows
 
 > [!CAUTION]
 > The voucher is created using properties from the _Device Manager Config_, so any changes to the configuration will result in a new voucher.
@@ -215,7 +217,7 @@ This control point will stop any prior notifications for the associated characte
 
 > ¹ See [payload limitations](#payload-limitations)
 
-#### 2.1.1 Network Configuration Control Point
+##### 2.1.1 Network Configuration Control Point
 
 This characteristic is the [Control Point](#control-points) for the [Network Configuration](#21-network-configuration).
 
@@ -239,7 +241,7 @@ This characteristic is the [Control Point](#control-points) for the [Network Con
 
 > ¹ See [payload limitations](#payload-limitations)
 
-#### 2.2.1 Device Manager Configuration Control Point
+##### 2.2.1 Device Manager Configuration Control Point
 
 This characteristic is the [Control Point](#control-points) for the [Device Manager Configuration](#22-device-manager-configuration).
 
@@ -320,6 +322,10 @@ The structure of the voucher is defined directly in the [FDO 1.1 Voucher][vouche
 
 Characteristics that may be need for additional troubleshooting or context.  The client (UEFI) will read the diagnostics bitfield during the `initialization` to determine when diagnostics will be sent.
 
+The value of each bitfield grouping defines the conditions for which the diagnostics should be sent.  For example, fields `0-1` for [Network Properties](#251-network-properties), a value of `0x1` means that the network properties will only be sent on error.
+
+All conditions share the same configured interval.  If the interval (bits 6-15) is zero (0) then it defaults to every three (3) seconds.
+
 | Characteristic UUID                 |
 | ----------------------------------- |
 | 0002500-32bd-4590-a184-b046cb3955ee |
@@ -328,23 +334,25 @@ Characteristics that may be need for additional troubleshooting or context.  The
 | :-------: | :-----------: | :--------: | ----------------- |
 |  uint16   |       2       |    Read    | Diagnostic opcode |
 
-| Bitfield | Description                    |
-| :------: | ------------------------------ |
-|   0-1    | Network Properties conditions  |
-|   2-3    | Network Diagnostics conditions |
-|   4-5    | State Diagnostics conditions   |
-|   6-15   | Additional Data                |
+| Bitfield | Description                                                |
+| :------: | ---------------------------------------------------------- |
+|   0-1    | [Network Properties](#251-network-properties) conditions   |
+|   2-3    | [Network Diagnostics](#252-network-diagnostics) conditions |
+|   4-5    | [State Diagnostics](#253-state-diagnostics) conditions     |
+|   6-15   | Additional Data                                            |
 
-| Value | Condition           |
-| :---: | ------------------- |
-|  0x0  | Disabled            |
-|  0x1  | On Error            |
-|  0x2  | On Stage Completion |
-|  0x3  | On Interval         |
+Each of the above conditions may have the one of the following values:
+
+| Value | Condition                |
+| :---: | ------------------------ |
+|  0x0  | Disabled                 |
+|  0x1  | On Error                 |
+|  0x2  | On Stage Completion      |
+|  0x3  | On Interval (default 3s) |
 
 Interval is defined within _Additional Data_.
 
-#### 2.5.1 Network Properties
+##### 2.5.1 Network Properties
 
 | Characteristic UUID                 |
 | ----------------------------------- |
@@ -354,7 +362,7 @@ Interval is defined within _Additional Data_.
 | :-------: | :-----------: | :--------: | ---------------------------------------------------------- |
 |   CBOR    |   variable    |   Write    | [CBOR Encoded Network Properties](#341-network-properties) |
 
-#### 2.5.2 Network Diagnostics
+##### 2.5.2 Network Diagnostics
 
 Reading this characteristic will **trigger UEFI to execute a series of checks** and provide the response as a flag.
 
@@ -366,27 +374,28 @@ Reading this characteristic will **trigger UEFI to execute a series of checks** 
 | --------- | :--------: | :--------------------------: |
 | uint64    |   Write    | Network Diagnostics bitfield |
 
-|  Bit  | Category | Description                               |
-| :---: | -------- | ----------------------------------------- |
-|   0   | Physical | Link up                                   |
-|   1   | IP       | Received DHCP response                    |
-|   3   | IP       | IP Address assigned                       |
-|   4   | IP       | Gateway ICMP Echo response                |
-|   5   | IP       | Destination¹ ICMP Echo response           |
-|   6   | DNS      | DNS Server ICMP Echo response             |
-|   7   | DNS      | NTP FQDN: Non-existent domain             |
-|   8   | DNS      | NTP FQDN: No answers in response          |
-|   9   | DNS      | NTP IP address answer received            |
-|   2   | DNS      | Destination¹ FQDN: Non-existent domain    |
-|  10   | DNS      | Destination¹ FQDN: No answers in response |
-|  11   | DNS      | Destination¹ FQDN: response received      |
-|  12   | IP       | Destination¹ TCP Ack                      |
-|  13   | NTP      | Time synchronized                         |
-| 14-63 | N/A      | Reserved for future use                   |
+|  Bit  | Category | Description                                           |
+| :---: | -------- | ----------------------------------------------------- |
+|   0   | Physical | Link up                                               |
+|   1   | Physical | SSID is broadcast or detected through active scanning |
+|   2   | IP       | Received DHCP response                                |
+|   3   | IP       | IP Address assigned                                   |
+|   4   | IP       | Gateway ICMP Echo response                            |
+|   5   | IP       | Destination¹ ICMP Echo response                       |
+|   6   | DNS      | DNS Server ICMP Echo response                         |
+|   7   | DNS      | NTP FQDN: Non-existent domain                         |
+|   8   | DNS      | NTP FQDN: No answers in response                      |
+|   9   | DNS      | NTP IP address answer received                        |
+|   2   | DNS      | Destination¹ FQDN: Non-existent domain                |
+|  10   | DNS      | Destination¹ FQDN: No answers in response             |
+|  11   | DNS      | Destination¹ FQDN: response received                  |
+|  12   | IP       | Destination¹ TCP Ack                                  |
+|  13   | NTP      | Time synchronized                                     |
+| 14-63 | N/A      | Reserved for future use                               |
 
 > ¹ Destination refers to either the network Proxy or Device Manager, whichever comes first.
 
-#### 2.5.3 State Diagnostics
+##### 2.5.3 State Diagnostics
 
 | Characteristic UUID                 |
 | ----------------------------------- |
@@ -404,11 +413,16 @@ All CBOR schemas use [RFC8610 CDDL](https://datatracker.ietf.org/doc/html/rfc861
 
 ```cddl
 NetworkConfig = {
+    addr: ipv4-addr / ipv6-addr
+    vlan: uint .size 2 .lt 4096
     proxy: - ProxyConfig
     ssid:  - string         ; SSID as a UTF8 string
     auth:  [* AuthProtocol]
     hosts: [* HostsEntry]
 }
+
+ipv4-addr = bytes .size 4
+ipv6-addr = bytes .size 16
 
 ProxyConfig = {
     httpProxy:  [+ string]  ; One or more proxy expressions as a UTF8 string
