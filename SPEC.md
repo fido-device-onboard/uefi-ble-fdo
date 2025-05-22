@@ -27,7 +27,7 @@ Operational benefits are focused around simplicity and a reduction in Total Cost
 - Standardizing lower level firmware and boot interfaces across heterogeneous systems
 
 > [!NOTE]
-> Onboarding, provisioning, and management can be be conflated into the same problem and solution (albeit clearly related). The onboarding capabilities herein are focused on the lower layers, namely establishment of ownership and control for onboarding, before OS installation starts.
+> Onboarding, provisioning, and management can be conflated into the same problem and solution (albeit clearly related). The onboarding capabilities herein are focused on the lower layers, namely establishment of ownership and control for onboarding, before OS installation starts.
 
 ## Components
 
@@ -36,6 +36,13 @@ There are three major components that are involved to onboard a device:
 - User Equipment (mobile phone, tablet, laptop, etc.)
 - Device to be onboarded
 - Device Manager, such as a cloud hosted service
+
+## Limitations
+
+The following are known and accepted limitations for the minimum viable product:
+
+- UEFI does not currently support [802.3ad](https://www.ieee802.org/3/hssg/public/apr07/frazier_01_0407.pdf) link aggregation
+- Firmware configuration module is only able to apply firmware configurations that do not require a soft reset
 
 ## Deployment Sequence
 
@@ -66,6 +73,8 @@ sequenceDiagram
     note over ue,uefi: CBOR length provided within first 9 bytes
     uefi -->>- ue: 
 
+    uefi ->> uefi: Self-DI &<br/> Extend Voucher
+
     ue ->>+ dm: [TCP] {Voucher²}
     note over ue, dm: Associates device credential with<br/>metadata provided in 'Add Device' step
     dm -->>- ue: {Accepted}
@@ -79,6 +88,9 @@ sequenceDiagram
     end
 
     ue ->>+ uefi: [BLE] Set Char 2.5<br/>{DiagnosticsConfig}
+    uefi -->>- ue: {Ack}
+
+    ue ->>+ uefi: [BLE] Set Char 2.5<br/>{Start}
     uefi -->>- ue: {Ack}
 
     par
@@ -95,10 +107,9 @@ sequenceDiagram
         uefi ->>+ dm: [FDO TO2] ServiceInfo
         rect rgb(215,243,162)
             note over dm,uefi: FSIM
-            dm -->> uefi: {signatures_digests}
             dm -->> uefi: Firmware Configuration Module
-            dm -->> uefi: Boot Module<br/>{EFI_IMAGE} or {EFI_URL}
-            dm -->>- uefi: {EFI_DATA}
+            dm -->> uefi: Loader Module<br/>{EFI_IMAGE} or {EFI_URL}
+            dm -->>- uefi: Loader Data Module<br/>{EFI_DATA}
         end
     end
     uefi ->> uefi: Boot via enhanced HTTP or payload from FSIM
@@ -277,30 +288,73 @@ For additional context and detail about current and prior states, use the [State
 | :-------: | :-----------: | :--------: | ----------- |
 |  uint16   |      1-2      |    Read    | State Code  |
 
-|  Code   | Description                                          |
-| :-----: | ---------------------------------------------------- |
-|    0    | Awaiting configurations                              |
-|   10    | Voucher ready                                        |
-|   99    | Awaiting Start                                       |
-|   100   | Parsing configurations                               |
-|   200   | Applying Network configuration                       |
-|   201   | Authenticating to Network                            |
-|   202   | Assigning IP address                                 |
-|   300   | Resolving Device Manager name                        |
-|   4XX   | FDO Protocol Messages                                |
-| 460-472 | FDO TO2                                              |
-|   500   | Receiving Host properties from Device Manager        |
-|   600   | Receiving Firmware configuration from Device Manager |
-|   700   | Applying Firmware configuration                      |
-|  1000   | Onboarding Complete                                  |
-|  2XXX   | Network Configuration errors                         |
-|  3XXX   | Device Manager Configuration errors                  |
-|  31XX   | Voucher errors                                       |
-|  3101   | Invalid public key type                              |
-|  3102   | Invalid public key format                            |
-|  4XXX   | Firmware Configuration errors                        |
-|  11XXX  | Error sending host properties to device manager      |
-|  12XXX  | Error retrieving firmware configuration              |
+|  Code   | Description                                     |
+| :-----: | ----------------------------------------------- |
+|    0    | Awaiting configurations                         |
+|   10    | Voucher ready                                   |
+|   99    | Awaiting Start                                  |
+|   100   | Parsing configurations                          |
+|   200   | Applying Network configuration                  |
+|   201   | Authenticating to Network                       |
+|   202   | Assigning IP address                            |
+|   300   | Resolving Device Manager name                   |
+|   4XX   | FDO Ownership Transfer                          |
+| 460-467 | FDO TO2 [Message Types][TO2Types]               |
+|   5XX   | FDO TO2 [FSIMs](#fsim-codes)                    |
+|   570   | FDO TO2 Device to Device Manager - Done         |
+|   571   | FDO TO2 Device Manager to Device - Done         |
+|   901   | Loading Image                                   |
+|   902   | Starting Image                                  |
+|  1000   | Onboarding Complete                             |
+|  2XXX   | Network Configuration errors                    |
+|  3XXX   | Device Manager Configuration errors             |
+|  31XX   | Voucher errors                                  |
+|  3101   | Invalid public key type                         |
+|  3102   | Invalid public key format                       |
+|  4XXX   | Firmware Configuration errors                   |
+|  5XXX   | FSIM errors                                     |
+|  6XXX   | Image errors                                    |
+|  11XXX  | Error sending host properties to device manager |
+|  12XXX  | Error retrieving firmware configuration         |
+
+##### FSIM Codes
+
+###### Host Information
+
+| Code  | Description                                       |
+| :---: | ------------------------------------------------- |
+|  501  | Device Manager activating Service Info Module     |
+|  502  | Device sending host properties                    |
+|  503  | Device sending host properties checksum           |
+|  504  | Device Manager validated host properties checksum |
+
+###### Firmware Configuration
+
+| Code  | Description                                             |
+| :---: | ------------------------------------------------------- |
+|  510  | Device Manager activating Firmware Configuration Module |
+|  511  | Device receiving firmware configurations                |
+|  512  | Device Manager sending checksums                        |
+|  513  | Device validated checksums of firmware configurations   |
+|  514  | Applying firmware configurations                        |
+
+###### Loader Image
+
+| Code  | Description                                      |
+| :---: | ------------------------------------------------ |
+|  520  | Device Manager activating Loader Module          |
+|  521  | Device receiving Loader Module data              |
+|  522  | Device Manager sending checksums                 |
+|  523  | Device validated checksums of Loader Module data |
+
+###### Loader Data
+
+| Code  | Description                                  |
+| :---: | -------------------------------------------- |
+|  530  | Device Manager activating Loader Data Module |
+|  531  | Device receiving Loader Data                 |
+|  532  | Device Manager sending checksums             |
+|  533  | Device validated checksums of Loader Data    |
 
 ##### 2.3.1 State interval
 
@@ -398,12 +452,12 @@ UEFI will execute a series of checks and send a notification at the interval def
 |   7   | DNS      | NTP FQDN: Non-existent domain                         |
 |   8   | DNS      | NTP FQDN: No answers in response                      |
 |   9   | DNS      | NTP IP address answer received                        |
-|   2   | DNS      | Destination¹ FQDN: Non-existent domain                |
-|  10   | DNS      | Destination¹ FQDN: No answers in response             |
-|  11   | DNS      | Destination¹ FQDN: response received                  |
-|  12   | IP       | Destination¹ TCP Ack                                  |
-|  13   | NTP      | Time synchronized                                     |
-| 14-63 | N/A      | Reserved for future use                               |
+|  10   | DNS      | Destination¹ FQDN: Non-existent domain                |
+|  11   | DNS      | Destination¹ FQDN: No answers in response             |
+|  12   | DNS      | Destination¹ FQDN: response received                  |
+|  13   | IP       | Destination¹ TCP Ack                                  |
+|  14   | NTP      | Time synchronized                                     |
+| 15-63 | N/A      | Reserved for future use                               |
 
 > ¹ Destination refers to either the network Proxy or Device Manager, whichever comes first.
 
@@ -526,12 +580,21 @@ DeviceManager = {
 
 ```cddl
 NetworkState = {
-    addr:    biguint     ; 128-bit IP address (IPv4 or IPv6)
-    gateway: biguint     ; 128-bit IP address (IPv4 or IPv6)
-    dns:     [+ biguint] ; One or more 128-bit DNS server IP addresses
-    ntp:     [+ biguint] ; One or more 128-bit DNS server IP addresses
-    time:    int         ; 64-bit Unix epoch time
+    interfaces: [+ InterfaceConfig] ; Array of interfaces configurations
+    time:       int                 ; 64-bit Unix epoch system time
 }
+
+InterfaceConfig = {
+    ip:      ipv4-addr / ipv6-addr
+    bus:     string                 ; Hardware address/path as a UTF-8 string
+    mac:     bytes .size 6
+    gateway: ipv4-addr / ipv6-addr
+    dns:     [+ ipv4-addr / ipv6-addr]
+    ntp:     [+ ipv4-addr / ipv6-addr]
+}
+
+ipv4-addr = bytes .size 4
+ipv6-addr = bytes .size 16
 ```
 
 #### 3.5 State Diagnostics
@@ -551,13 +614,13 @@ Step = {
 }
 ```
 
-| Status | Description |
-| :----: | ----------- |
-|   0    | Not started |
-|   1    | Skipped     |
-|   2    | In Progress |
-|   3    | Completed   |
-|   4    | Errored     |
+| Status | Description                                      |
+| :----: | ------------------------------------------------ |
+|   0    | Not started                                      |
+|   1    | Not Applicable (e.g. no authentication required) |
+|   2    | In Progress                                      |
+|   3    | Completed                                        |
+|   4    | Errored                                          |
 
 ## Terms
 
@@ -567,4 +630,5 @@ Step = {
 | NFC     | Near Field Communication                    |
 | DPP     | (Wi-Fi Direct) Device Provisioning Protocol |
 
+[TO2Types]: https://fidoalliance.org/specs/FDO/FIDO-Device-Onboard-PS-v1.1-20220419/FIDO-Device-Onboard-PS-v1.1-20220419.html#TO2
 [voucher-cddl]: https://fidoalliance.org/specs/FDO/FIDO-Device-Onboard-RD-v1.1-20211214/FIDO-device-onboard-spec-v1.1-rd-20211214.html#OwnershipVoucher
