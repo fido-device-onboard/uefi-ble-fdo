@@ -90,7 +90,7 @@ sequenceDiagram
     ue ->>+ uefi: [BLE] Set Char 2.5<br/>{DiagnosticsConfig}
     uefi -->>- ue: {Ack}
 
-    ue ->>+ uefi: [BLE] Set Char 2.5<br/>{Start}
+    ue ->>+ uefi: [BLE] Set Char 2.6<br/>{Start}
     uefi -->>- ue: {Ack}
 
     par
@@ -144,7 +144,6 @@ flowchart TD
     central@{ shape: lean-r, label: "UEFI" }
     init@{ shape: delay, label: "Init" }
     central --> init
-    central -- Send<br/>(looping) --> state@{ shape: lin-doc, label: "State" }
     init -- Receive --- netConfig@{ shape: doc, label: "Network<br/>Configuration" }
     init -- Receive --- devmgrConfig@{ shape: doc, label: "Device Manager<br/>Configuration" }
     init -- Receive --- notifyConfig@{ shape: doc, label: "Diagnostic Notifications<br/>Configuration" }
@@ -153,11 +152,15 @@ flowchart TD
     notifyConfig --> ready
     selfDI -- After Sent--> ready@{ shape: delay, label: "Ready" }
     selfDI -- Send --> voucher@{shape: lin-doc, label: "Voucher"}
-
+    ready -.- start@{ shape: doc, label: "Start" }
+    central -- Send --> start
+    central -- Send<br/>(looping) ---> state@{ shape: lin-doc, label: "State" }
     end
 
     subgraph Onboarding
-    ready -.- netinit[State: Processing<br/>Stage: Network Init] --> fdoConnect[State: Processing<br/>Stage: FDO TO2]
+    start --> netinit[State: Processing<br/>Stage: Network Init] 
+    
+    netinit --> fdoConnect[State: Processing<br/>Stage: FDO TO2]
 
     fdoConnect --> connected@{ shape: diamond, label: "Success" }
     connected -- Yes --> fsim[State: Processing<br/>Stage: FDO FSIM]
@@ -215,16 +218,7 @@ Many characteristics are `CBOR` encoded. See the [CBOR schemas](#3-cbor) section
 > Sending data that exceeds the MTU can be optimally achieved using L2CAP, however this eliminates common mobile devices such as those from Apple.  Accordingly, this specification uses chunking within the scope of GATT.
 
 TODO: Figure out if most stacks have a feature for server callbacks when CCCD value changes
-
-#### Control Points
-
-Writing a single byte op code to a Control Point characteristic informs the server that it should start sending the associated characteristic.  This allows the server to send large payloads as notifications, which will maximize the throughput for GATT based data objects.
-
-This control point will stop any prior notifications for the associated characteristic.
-
-| Op Code | Description            |
-| :-----: | ---------------------- |
-|    1    | Start with first chunk |
+TODO: Add large CBOR payload transfer process
 
 #### 2.1 Network Configuration
 
@@ -234,21 +228,7 @@ This control point will stop any prior notifications for the associated characte
 
 | Data Type | Size (octets) | Properties | Description                                                     |
 | :-------: | :-----------: | :--------: | --------------------------------------------------------------- |
-|   CBOR    |   variable    |  Notify¹   | [CBOR Encoded Network Configuration](#31-network-configuration) |
-
-> ¹ See [payload limitations](#payload-limitations)
-
-##### 2.1.1 Network Configuration Control Point
-
-This characteristic is the [Control Point](#control-points) for the [Network Configuration](#21-network-configuration).
-
-| Characteristic UUID                  |
-| ------------------------------------ |
-| 00000211-32bd-4590-a184-b046cb3955ee |
-
-| Data Type | Size (octets) | Properties | Description                |
-| :-------: | :-----------: | :--------: | -------------------------- |
-|   uint8   |       1       |   Write    | Notification control point |
+|   CBOR    |   variable    |   Write    | [CBOR Encoded Network Configuration](#31-network-configuration) |
 
 #### 2.2 Device Manager Configuration
 
@@ -258,21 +238,7 @@ This characteristic is the [Control Point](#control-points) for the [Network Con
 
 | Data Type | Size (octets) | Properties | Description                                                                   |
 | :-------: | :-----------: | :--------: | ----------------------------------------------------------------------------- |
-|   CBOR    |   variable    |  Notify¹   | [CBOR Encoded Device Manager Configuration](#32-device-manager-configuration) |
-
-> ¹ See [payload limitations](#payload-limitations)
-
-##### 2.2.1 Device Manager Configuration Control Point
-
-This characteristic is the [Control Point](#control-points) for the [Device Manager Configuration](#22-device-manager-configuration).
-
-| Characteristic UUID                  |
-| ------------------------------------ |
-| 00000221-32bd-4590-a184-b046cb3955ee |
-
-| Data Type | Size (octets) | Properties | Description                |
-| :-------: | :-----------: | :--------: | -------------------------- |
-|   uint8   |       1       |   Write    | Notification control point |
+|   CBOR    |   variable    |   Write    | [CBOR Encoded Device Manager Configuration](#32-device-manager-configuration) |
 
 #### 2.3 State
 
@@ -472,6 +438,18 @@ UEFI will execute a series of checks and send a notification at the interval def
 |   CBOR    |   variable    |  Notify¹   | [CBOR Encoded State Diagnostics](#35-state-diagnostics) |
 
 > ¹ See [payload limitations](#payload-limitations)
+
+#### 2.6 Start
+
+Writing to this characteristic will initiate communication and the onboarding process between the Device and Device Manager.
+
+| Characteristic UUID                 |
+| ----------------------------------- |
+| 0002600-32bd-4590-a184-b046cb3955ee |
+
+| Data Type | Size (octets) | Properties | Description      |
+| :-------: | :-----------: | :--------: | ---------------- |
+|   uint8   |       1       |   Write    | Start onboarding |
 
 ### 3. CBOR
 
