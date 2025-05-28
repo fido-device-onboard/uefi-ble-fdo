@@ -16,7 +16,7 @@ This document is a UEFI firmware specification for BLE and FIDO Device Onboard (
 1. Exchange secrets securely
 1. Delegate to any device-manager¹ conforming to the onboarding API
 
-All of the above must be achievable while also significantly reducing the required skillets of the person placing the device in its operational location.
+All of the above must be achievable while also significantly reducing the required skill sets of the person placing the device in its operational location.
 
 > ¹ A device manager is responsible for operational management of a system. As an example, a device manager can install or boot an operating system as the first step it performs.
 
@@ -27,7 +27,22 @@ Operational benefits are focused around simplicity and a reduction in Total Cost
 - Standardizing lower level firmware and boot interfaces across heterogeneous systems
 
 > [!NOTE]
-> Onboarding, provisioning, and management can be be conflated into the same problem and solution (albeit clearly related). The onboarding capabilities herein are focused on the lower layers, namely establishment of ownership and control for onboarding, before OS installation starts.
+> Onboarding, provisioning, and management can be conflated into the same problem and solution (albeit clearly related). The onboarding capabilities herein are focused on the lower layers, namely establishment of ownership and control for onboarding, before OS installation starts.
+
+## Components
+
+There are three major components that are involved to onboard a device:
+
+- User Equipment (mobile phone, tablet, laptop, etc.)
+- Device to be onboarded
+- Device Manager, such as a cloud hosted service
+
+## Limitations
+
+The following are known and accepted limitations for the minimum viable product:
+
+- UEFI does not currently support [802.3ad](https://www.ieee802.org/3/hssg/public/apr07/frazier_01_0407.pdf) link aggregation
+- Firmware configuration module is only able to apply firmware configurations that do not require a soft reset
 
 ## Deployment Sequence
 
@@ -35,8 +50,8 @@ Operational benefits are focused around simplicity and a reduction in Total Cost
 
 ```mermaid
 sequenceDiagram
-    participant ue as Smartphone
-    participant uefi as UEFI
+    participant ue as Smartphone<br/>(GAP Central)<br/>(GATT Client)
+    participant uefi as UEFI<br/>(GAP Peripheral)<br/>(GATT Server)
     participant dm as Device Manager
 
     autonumber
@@ -45,101 +60,139 @@ sequenceDiagram
     note over ue,dm: Device Manager user authentication is non-normative but required.
     dm -->> ue: {Session Token}
     ue ->> dm: Add Device
+    note over ue,dm: Request may include any arbitrary metadata,<br/>such as location or category
     dm -->>- ue: {NetworkConfig,DeviceManagerConfig}
 
     ue -) uefi: Pair<br>{Just Works security}
     note over ue, uefi: User can optionally confirm the serial<br/>number printed on the system<br/>and displayed in on their smartphone
 
-    ue -) uefi: [BLE] Write<br/>{DeviceManagerConfig}
-    uefi -) ue: [BLE] Read<br/>{Voucher}
-    ue ->>+ dm: {Voucher}
+    ue ->>+ uefi: [BLE] Set Char 2.2<br/>{DeviceManagerConfig}
+    uefi -->>- ue: {Ack}
+
+    ue ->>+ uefi: [BLE] Get Char 2.6
+    note over ue,uefi: CBOR length provided within first 9 bytes
+    uefi -->>- ue: {Voucher²}
+
+    uefi ->> uefi: Self-DI &<br/> Extend Voucher
+
+    ue ->>+ dm: [TCP] {Voucher²}
+    note over ue, dm: Associates device credential with<br/>metadata provided in 'Add Device' step
     dm -->>- ue: {Accepted}
 
-    ue -) uefi: [BLE] Write<br/>{NetworkConfig}
+    ue ->>+ uefi: [BLE] Set Char 2.1<br/>{NetworkConfig}
+    uefi -->>- ue: {Ack}
+
+    opt
+    ue ->>+ uefi: [BLE] Set Char 2.3.1<br/>{StateInterval}
+    uefi -->>- ue: {Ack}
+    end
+
+    ue ->>+ uefi: [BLE] Set Char 2.5<br/>{DiagnosticsConfig}
+    uefi -->>- ue: {Ack}
+
+    ue ->>+ uefi: [BLE] Set Char 2.6<br/>{Start}
+    uefi -->>- ue: {Ack}
 
     par
-        loop Until Completion State
-        ue ->>+ uefi: [BLE] Read<br/>{State}
-        uefi -->>- ue: {Processing, Success, or Error}
-    end
-     and UEFI Protocol Requests
+        loop Every {State Interval}<br/>default 1000ms
+        uefi -) ue: [BLE] Notify: Char 2.3<br/>{State}
+        end
+        loop Every {Diagnostic Condition}
+        uefi -) ue: [BLE] Char 2.5 Notify:<br/>{Network Properties}<br/>{Network Diagnostics}<br/>{State Diagnostics}
+        end
+    and UEFI Protocol Requests
         uefi ->> uefi: Parse and apply network configuration
         uefi ->>+ dm: [FDO TO2] Connect
         dm -->>- uefi: {Authenticate,Key Exchange}
         uefi ->>+ dm: [FDO TO2] ServiceInfo
         rect rgb(215,243,162)
             note over dm,uefi: FSIM
-            dm -->> uefi: {signatures_digests}
             dm -->> uefi: Firmware Configuration Module
-            dm -->> uefi: Boot Module<br/>{EFI_IMAGE} or {EFI_URL}
-            dm -->>- uefi: {EFI_DATA}
+            dm -->> uefi: Loader Module<br/>{EFI_IMAGE} or {EFI_URL}
+            dm -->>- uefi: Loader Data Module<br/>{EFI_DATA}
         end
+
+        uefi ->> uefi: LoadImage()
+        note over uefi: EFI image loaded by FSIM or downloaded from URL
+        uefi ->> uefi: StartImage()
+
+        note over uefi: Until<br/>ExitBootServices() called<br/>or<br/>StartImage() returns
+        uefi ->>+ dm: TO2.Done
+        dm -->>- uefi: TO2.Done2
     end
     uefi ->> uefi: Boot via enhanced HTTP or payload from FSIM
 ```
 
-### States
+> ² See the [FIDO Device Onboard v1.1 voucher specification][voucher-cddl] for more details.
 
-The BLE sequence has finite states that can be identified by reading the `State` characteristic.
+## States
+
+The BLE sequence implemented in the device UEFI firmware has the following finite states:
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Waiting: Pair
+    [*] --> Initializing: Pair
 
-    Waiting --> Ready: Read Voucher
-    Ready --> Processing: Read State
+    Initializing --> Processing: Ready State
     state err <<choice>>
     Processing --> err: Exit
     err --> Errored: Error
     err --> [*]: Success
-    Errored --> Waiting: Reset Config(s)
+    Errored --> Initializing: Restart
 ```
 
-### Flows
+## Flows
 
-> [!Caution]
-> The voucher is created using properties from the _Device Manager Config_, so any changes to the configuration will result in a new voucher.
+The only intended means of providing configuration and retrieving state, including diagnostics, is through the BLE central (e.g. mobile device). Once [FDO TO2.SetupDevice](https://fidoalliance.org/specs/FDO/FIDO-Device-Onboard-PS-v1.1-20220419/FIDO-Device-Onboard-PS-v1.1-20220419.html#to2deviceserviceinfoready-type-66) completes, the Device has established mutually authenticated communication with the Device Manager, however all state and diagnostics are intended to be provided over BLE because FSIMs do not provide a method for parallel asynchronous processes.
+
+The onboarding flow does not complete until either `ExitBootServices()` is called by the EFI Application (e.g. bootloader or operating system) or `StartImage()` returns and [TO2.Done2](https://fidoalliance.org/specs/FDO/FIDO-Device-Onboard-PS-v1.1-20220419/FIDO-Device-Onboard-PS-v1.1-20220419.html#to2done2-type-71) completes.
+
+`StartImage()` would return if the EFI Application is meant to perform and action and exit, as opposed to handing over control to an operating system. For example, this could be a lightweight operating system installer that copies an OS bootloader to the EFI system partition. Another example is an EFI application that configures HTTPS boot and sets it as the first boot target.
+
+Upon either `ExitBootServices()` being called or `StartImage()` returning, the TO2 process will complete. The FDO TO2 process is kept open to report potential errors as late in the onboarding process as possible. Notably, this does not handle errors that occur after the UEFI DXE phase, such as errors that may occur if an operating system hangs later in the boot process. Such errors should be handled by a watchdog.
 
 ```mermaid
 flowchart TD
     subgraph Configs and Voucher
-    central@{ shape: lean-r, label: "BLE Central" }
-    central -- Write --> netConfig@{ shape: doc, label: "Network<br/>Configuration" }
-    central -- Write --> devmgrConfig@{ shape: doc, label: "Device Manager<br/>Configuration" }
-    devmgrConfig --> selfDI[Self-DI]
-    voucher@{shape: lin-doc, label: "Voucher"} -- Read --> central
-    selfDI -- Generate and Extend --> voucher
+    central@{ shape: lean-r, label: "UEFI" }
+    init@{ shape: delay, label: "Init" }
+    central --> init
+    init -- Receive --- netConfig@{ shape: doc, label: "Network<br/>Configuration" }
+    init -- Receive --- devmgrConfig@{ shape: doc, label: "Device Manager<br/>Configuration" }
+    init -- Receive --- notifyConfig@{ shape: doc, label: "Diagnostic Notifications<br/>Configuration" }
+    devmgrConfig --> selfDI[Generate and Extend Voucher]
     netConfig --> ready
-    voucher --> ready@{ shape: delay, label: "Ready" }
+    notifyConfig --> ready
+    selfDI -- After Sent--> ready@{ shape: delay, label: "Ready" }
+    selfDI -- Send --> voucher@{shape: lin-doc, label: "Voucher"}
+    ready -.- start@{ shape: doc, label: "Start" }
+    central -- Send --> start
+    central -- Send<br/>(looping) ---> state@{ shape: lin-doc, label: "State" }
     end
 
     subgraph Onboarding
-    ready -.- state@{ shape: doc, label: "State" }
-    state -- {on first read} --> netInit[State: Processing<br/>Stage: Network Init]
-    state -- Read<br/>(Looping) --> central
-    netInit --> fdoConnect[State: Processing<br/>Stage: FDO TO2]
+    start --> netinit[State: Processing<br/>Stage: Network Init]
+
+    netinit --> fdoConnect[State: Processing<br/>Stage: FDO TO2]
 
     fdoConnect --> connected@{ shape: diamond, label: "Success" }
-    connected -- Yes --> fdoXFER[State: Processing<br/>Stage: FDO FSIM]
-    connected -- No -->error@{ shape: dbl-circ, label: "Error" }
-    error -- Write --> rnetConfig@{ shape: doc, label: "Reset Network Configuration" }
-    rnetConfig --> resetNetCfg@{ shape: braces, label: "Restart flow back to<br/>Network Configuration" }
+    connected -- Yes --> fsim[State: Processing<br/>Stage: FDO FSIM]
 
-    fdoXFER --> transferred@{ shape: diamond, label: "Success" }
-    transferred -- Yes --> success@{ shape: dbl-circ, label: "Success" }
+    fsim --> transferred@{ shape: diamond, label: "Success" }
+    transferred -- Yes --> success@{ shape: dbl-circ, label: "Done" }
+
     transferred -- No -->error
+    connected -- No -->error@{ shape: dbl-circ, label: "Error" }
 
-    error -- Write --> rdevmgrConfig@{ shape: doc, label: "Reset Device Manager Configuration" }
-    rdevmgrConfig  --> resetDevMgrCfg@{ shape: braces, label: "Restart flow back to<br/>Device Manager Configuration" }
+    error --> init
 
-    error -- Write --> retry@{ shape: doc, label: "Retry" }
-    retry --> netInit
 
     end
-
 ```
 
 ## GATT Specification
+
+This specification follows the normative definitions in the [GATT Specification Supplement](https://www.bluetooth.com/specifications/specs/gatt-specification-supplement-5/).
 
 ### Attribute Protocol
 
@@ -167,7 +220,13 @@ TODO: Register SIG attribute type for UEFI BLE-FDO Onboarding
 
 From a design principle, there is a design correlation between RPCs and characteristics. For example, a `GetNetworkConfig` RPC correlates to a `NetworkConfig` characteristic.
 
-All characteristics are `CBOR` encoded. See the [CBOR schemas](#3-cbor) section for data models.
+Many characteristics are `CBOR` encoded. See the [CBOR schemas](#3-cbor) section for data models.
+
+> [!CAUTION]
+>
+> #### Payload Limitations
+>
+> The current flows have a limitation of 512 bytes. Subsequent updates to the specification will address chunking for larger payloads.
 
 #### 2.1 Network Configuration
 
@@ -175,122 +234,237 @@ All characteristics are `CBOR` encoded. See the [CBOR schemas](#3-cbor) section 
 | ----------------------------------- |
 | 0000210-32bd-4590-a184-b046cb3955ee |
 
-| Field | Data Type | Size (octets) |      Properties      | Description                        |
-| ----- | :-------: | :-----------: | :------------------: | ---------------------------------- |
-| CBOR  |   uint8   |   variable    | WriteWithoutResponse | CBOR Encoded Network Configuration |
-
-#### 2.1.1 Reset Network Configuration
-
-| Characteristic UUID                  |
-| ------------------------------------ |
-| 00000211-32bd-4590-a184-b046cb3955ee |
-
-| Field                       | Data Type | Size (octets) | Properties | Description                 |
-| --------------------------- | :-------: | :-----------: | :--------: | --------------------------- |
-| Reset Network Configuration |   uint8   |       1       |   Write    | Clear network configuration |
+| Data Type | Size (octets) | Properties | Description                                                     |
+| :-------: | :-----------: | :--------: | --------------------------------------------------------------- |
+|   CBOR    |   variable    |   Write    | [CBOR Encoded Network Configuration](#31-network-configuration) |
 
 #### 2.2 Device Manager Configuration
+
+> [!CAUTION]
+> The FDO Voucher is created using properties from the _Device Manager Config_, so any changes to the configuration will result in a new voucher.
 
 | Characteristic UUID                 |
 | ----------------------------------- |
 | 0000220-32bd-4590-a184-b046cb3955ee |
 
-| Field | Data Type | Size (octets) |      Properties      | Description                        |
-| ----- | :-------: | :-----------: | :------------------: | ---------------------------------- |
-| CBOR  |   uint8   |   variable    | WriteWithoutResponse | CBOR Encoded Network Configuration |
-
-#### 2.2.1 Reset Device Manager Configuration
-
-| Characteristic UUID                  |
-| ------------------------------------ |
-| 00000221-32bd-4590-a184-b046cb3955ee |
-
-| Field                              | Data Type | Size (octets) | Properties | Description                 |
-| ---------------------------------- | :-------: | :-----------: | :--------: | --------------------------- |
-| Reset Device Manager Configuration |   uint8   |       1       |   Write    | Clear network configuration |
-
-#### 2.3 FDO Voucher
-
-After receiving a device manager configuration the FDO self-Device-Initialization (self-DI) will be performed.
-
-If the voucher characteristic is read prior to the voucher creation process completion, the response will include an error tag.
-
-| Characteristic UUID                 |
-| ----------------------------------- |
-| 0000230-32bd-4590-a184-b046cb3955ee |
-
-| Field | Data Type | Size (octets) | Properties | Description                                |
-| ----- | :-------: | :-----------: | :--------: | ------------------------------------------ |
-| CBOR  |   uint8   |   variable    |    Read    | [CBOR tagged FDO Voucher](#35-fdo-voucher) |
+| Data Type | Size (octets) | Properties | Description                                                                   |
+| :-------: | :-----------: | :--------: | ----------------------------------------------------------------------------- |
+|   CBOR    |   variable    |   Write    | [CBOR Encoded Device Manager Configuration](#32-device-manager-configuration) |
 
 #### 2.3 State
 
-The Network Configuration and Device Manager Configuration may be delivered out of order and may be arbitrarily reset. UEFI will not attempt to initiate an onboarding request until a poll of the `State` characteristic has been initiated to view the status of the request.
+UEFI will first apply the Network Configuration and then attempt to onboard to the device manager using the Device Manager configuration. During the execution of the sequence the current state of execution will be sent to the BLE Central device. In the event of an error, UEFI will restart the entire sequence.
 
-Once polling has been initiated, UEFI will first apply the Network Configuration and then attempt to onboard to the device manager using the Device Manager configuration. UEFI will either return success or an error that can occur at any point of the sequence. UEFI MAY return a status indicating that a request is still in process. UEFI will NOT retry any steps of the sequence. In the event of an error, the client MAY issue a [Retry](#24-retry) or the client MAY reset and write the Network and/or Device Manager configuration with any required corrections.
+For additional context and detail about current and prior states, use the [State Diagnostics](#253-state-diagnostics) characteristic.
 
 | Characteristic UUID                 |
 | ----------------------------------- |
 | 0000230-32bd-4590-a184-b046cb3955ee |
 
-| Field | Data Type | Size (octets) | Properties | Description         |
-| ----- | :-------: | :-----------: | :--------: | ------------------- |
-| CBOR  |   uint8   |   variable    |    Read    | CBOR Encoded Status |
+| Data Type | Size (octets) | Properties | Description |
+| :-------: | :-----------: | :--------: | ----------- |
+|  uint16   |      1-2      |   Notify   | State Code  |
 
-#### 2.4 Retry
+|  Code   | Description                                     |
+| :-----: | ----------------------------------------------- |
+|    0    | Awaiting configurations                         |
+|   10    | Voucher ready                                   |
+|   99    | Awaiting Start                                  |
+|   100   | Parsing configurations                          |
+|   200   | Applying Network configuration                  |
+|   201   | Authenticating to Network                       |
+|   202   | Assigning IP address                            |
+|   300   | Resolving Device Manager name                   |
+|   4XX   | FDO Ownership Transfer                          |
+| 460-467 | FDO TO2 [Message Types][TO2Types]               |
+|   5XX   | FDO TO2 [FSIMs](#fsim-codes)                    |
+|   901   | Loading Boot Image                              |
+|   902   | Starting Boot Image                             |
+|   970   | FDO TO2 Device to Device Manager - Done         |
+|   971   | FDO TO2 Device Manager to Device - Done         |
+|  1000   | Onboarding Complete                             |
+|  2XXX   | Network Configuration errors                    |
+|  3XXX   | Device Manager Configuration errors             |
+|  31XX   | Voucher errors                                  |
+|  3101   | Invalid public key type                         |
+|  3102   | Invalid public key format                       |
+|  4XXX   | Firmware Configuration errors                   |
+|  5XXX   | FSIM errors                                     |
+|  6XXX   | Image errors                                    |
+|  11XXX  | Error sending host properties to device manager |
+|  12XXX  | Error retrieving firmware configuration         |
 
-Request UEFI to repeat the onboarding sequence. UEFI will discard any bytes received for this characteristic, so a client SHOULD write 0 bytes.
+##### FSIM Codes
+
+FDO Service Info Modules (FSIM) are used to exchange information and execute instructions between the Device and Device Manager.
+
+This implementation MUST minimally allow for the loading and starting of an EFI Image. The last FSIM MAY start a bootloader, or it can apply configurations that apply to subsequent UEFI boot targets, such as booting over HTTP(S) or local disk.
+
+###### Host Information
+
+| Code | Description                                       |
+| :--: | ------------------------------------------------- |
+| 501  | Device Manager activating Service Info Module     |
+| 502  | Device sending host properties                    |
+| 503  | Device sending host properties checksum           |
+| 504  | Device Manager validated host properties checksum |
+
+###### Firmware Configuration
+
+| Code | Description                                             |
+| :--: | ------------------------------------------------------- |
+| 510  | Device Manager activating Firmware Configuration Module |
+| 511  | Device receiving firmware configurations                |
+| 512  | Device Manager sending checksums                        |
+| 513  | Device validated checksums of firmware configurations   |
+| 514  | Applying firmware configurations                        |
+
+###### Loader Image
+
+| Code | Description                                      |
+| :--: | ------------------------------------------------ |
+| 520  | Device Manager activating Loader Module          |
+| 521  | Device receiving Loader Module data              |
+| 522  | Device Manager sending checksums                 |
+| 523  | Device validated checksums of Loader Module data |
+
+###### Loader Data
+
+| Code | Description                                  |
+| :--: | -------------------------------------------- |
+| 530  | Device Manager activating Loader Data Module |
+| 531  | Device receiving Loader Data                 |
+| 532  | Device Manager sending checksums             |
+| 533  | Device validated checksums of Loader Data    |
+
+##### 2.3.1 State interval
+
+| Characteristic UUID                 |
+| ----------------------------------- |
+| 0000231-32bd-4590-a184-b046cb3955ee |
+
+| Data Type | Size (octets) | Properties | Description                                                        |
+| :-------: | :-----------: | :--------: | ------------------------------------------------------------------ |
+|  uint16   |       2       |   Write    | Minimum frequency to write state in milliseconds, defaults to 1000 |
+
+#### 2.4 FDO Voucher
+
+After receiving a device manager configuration the FDO self-Device-Initialization (self-DI) will be performed. The device will generate its own ephemeral manufacturer key an automatically extend the voucher with the Owner Service Public Key.
+
+If the voucher characteristic is read prior to the voucher creation process completion, the response will include an error tag.
+
+The structure of the voucher is defined directly in the [FDO 1.1 Voucher][voucher-cddl] normative definition.
 
 | Characteristic UUID                 |
 | ----------------------------------- |
 | 0000240-32bd-4590-a184-b046cb3955ee |
 
-| Field | Data Type | Size (octets) | Properties | Description                 |
-| ----- | :-------: | :-----------: | :--------: | --------------------------- |
-| CBOR  |   uint8   |       1       |   Write    | Restart onboarding sequence |
+| Data Type | Size (octets) | Properties | Description                              |
+| :-------: | :-----------: | :--------: | ---------------------------------------- |
+|   CBOR    |   variable    |    Read    | CBOR encoded [FDO Voucher][voucher-cddl] |
 
 #### 2.5 Diagnostics
 
-Characteristics that may be read for additional troubleshooting or context.
+Characteristics that may be need for additional troubleshooting or context. The client will write the diagnostics bitfield during the `initialization` to determine when diagnostics will be sent, if at all.
 
-#### 2.5.1 Network Properties
+The value of each bitfield grouping defines the conditions for which the diagnostics should be sent. For example, fields `0-1` for [Network Properties](#251-network-properties), a value of `0x1` means that the network properties will only be sent on error.
+
+All conditions share the same configured interval. If the interval (bits 6-15) is zero (0) then it defaults to every three (3) seconds.
+
+| Characteristic UUID                 |
+| ----------------------------------- |
+| 0002500-32bd-4590-a184-b046cb3955ee |
+
+| Data Type | Size (octets) | Properties | Description       |
+| :-------: | :-----------: | :--------: | ----------------- |
+|  uint16   |       2       |   Write    | Diagnostic opcode |
+
+| Bitfield | Description                                                |
+| :------: | ---------------------------------------------------------- |
+|   0-1    | [Network Properties](#251-network-properties) conditions   |
+|   2-3    | [Network Diagnostics](#252-network-diagnostics) conditions |
+|   4-5    | [State Diagnostics](#253-state-diagnostics) conditions     |
+|   6-15   | Additional Data                                            |
+
+Each of the above conditions may have the one of the following values to indicate when the diagnostic notification should be sent:
+
+| Value | Condition                |
+| :---: | ------------------------ |
+|  0x0  | Disabled                 |
+|  0x1  | On Error                 |
+|  0x2  | On Stage Completion      |
+|  0x3  | On Interval (default 3s) |
+
+Interval is defined within _Additional Data_.
+
+##### 2.5.1 Network Properties
 
 | Characteristic UUID                 |
 | ----------------------------------- |
 | 0002501-32bd-4590-a184-b046cb3955ee |
 
-| Field | Data Type | Size (octets) | Properties | Description                     |
-| ----- | :-------: | :-----------: | :--------: | ------------------------------- |
-| CBOR  |   uint8   |   variable    |    Read    | CBOR Encoded Network Properties |
+| Data Type | Size (octets) | Properties | Description                                                |
+| :-------: | :-----------: | :--------: | ---------------------------------------------------------- |
+|   CBOR    |   variable    |  Notify¹   | [CBOR Encoded Network Properties](#341-network-properties) |
 
-#### 2.5.2 Network Diagnostics
+> ¹ See [payload limitations](#payload-limitations)
 
-Reading this characteristic will trigger UEFI to execute a series of checks and provide the response as a flag.
+##### 2.5.2 Network Diagnostics
+
+UEFI will execute a series of checks and send a notification at the interval defined in the [Notification Configuration](#25-diagnostics).
 
 | Characteristic UUID                 |
 | ----------------------------------- |
 | 0002502-32bd-4590-a184-b046cb3955ee |
 
-| Field | Data Type | Size (octets) | Properties | Description         |
-| ----- | :-------: | :-----------: | :--------: | ------------------- |
-| Flag  |  uint64   |       8       |    Read    | Network Diagnostics |
+| Data Type | Properties |         Description          |
+| --------- | :--------: | :--------------------------: |
+| uint64    |   Notify   | Network Diagnostics bitfield |
 
-|  Bit  | Category | Description                               |
-| :---: | -------- | ----------------------------------------- |
-|   0   | IP       | Gateway ICMP Echo response                |
-|   1   | IP       | Destination¹ ICMP Echo response           |
-|   2   | IP       | Destination¹ TCP Ack                      |
-|   3   | DNS      | DNS Server ICMP Echo response             |
-|   4   | DNS      | NTP FQDN: Non-existent domain             |
-|   5   | DNS      | NTP FQDN: No answers in response          |
-|   6   | DNS      | NTP IP address answer received            |
-|   7   | DNS      | Destination¹ FQDN: Non-existent domain    |
-|   8   | DNS      | Destination¹ FQDN: No answers in response |
-|   9   | DNS      | Destination¹ FQDN: response received      |
-|  10   | NTP      | Time synchronized                         |
-| 11-63 | N/A      | Reserved for future use                   |
+|  Bit  | Category | Description                                           |
+| :---: | -------- | ----------------------------------------------------- |
+|   0   | Physical | Link up                                               |
+|   1   | Physical | SSID is broadcast or detected through active scanning |
+|   2   | IP       | Received DHCP response                                |
+|   3   | IP       | IP Address assigned                                   |
+|   4   | IP       | Gateway ICMP Echo response                            |
+|   5   | IP       | Destination¹ ICMP Echo response                       |
+|   6   | DNS      | DNS Server ICMP Echo response                         |
+|   7   | DNS      | NTP FQDN: Non-existent domain                         |
+|   8   | DNS      | NTP FQDN: No answers in response                      |
+|   9   | DNS      | NTP IP address answer received                        |
+|  10   | DNS      | Destination¹ FQDN: Non-existent domain                |
+|  11   | DNS      | Destination¹ FQDN: No answers in response             |
+|  12   | DNS      | Destination¹ FQDN: response received                  |
+|  13   | IP       | Destination¹ TCP Ack                                  |
+|  14   | NTP      | Time synchronized                                     |
+| 15-63 | N/A      | Reserved for future use                               |
 
 > ¹ Destination refers to either the network Proxy or Device Manager, whichever comes first.
+
+##### 2.5.3 State Diagnostics
+
+| Characteristic UUID                 |
+| ----------------------------------- |
+| 0002503-32bd-4590-a184-b046cb3955ee |
+
+| Data Type | Size (octets) | Properties | Description                                             |
+| :-------: | :-----------: | :--------: | ------------------------------------------------------- |
+|   CBOR    |   variable    |  Notify¹   | [CBOR Encoded State Diagnostics](#35-state-diagnostics) |
+
+> ¹ See [payload limitations](#payload-limitations)
+
+#### 2.6 Start
+
+Writing to this characteristic will initiate communication and the onboarding process between the Device and Device Manager.
+
+| Characteristic UUID                 |
+| ----------------------------------- |
+| 0002600-32bd-4590-a184-b046cb3955ee |
+
+| Data Type | Size (octets) | Properties | Description      |
+| :-------: | :-----------: | :--------: | ---------------- |
+|   uint8   |       1       |   Write    | Start onboarding |
 
 ### 3. CBOR
 
@@ -300,11 +474,16 @@ All CBOR schemas use [RFC8610 CDDL](https://datatracker.ietf.org/doc/html/rfc861
 
 ```cddl
 NetworkConfig = {
+    addr: ipv4-addr / ipv6-addr
+    vlan: uint .size 2 .lt 4096
     proxy: - ProxyConfig
     ssid:  - string         ; SSID as a UTF8 string
     auth:  [* AuthProtocol]
     hosts: [* HostsEntry]
 }
+
+ipv4-addr = bytes .size 4
+ipv6-addr = bytes .size 16
 
 ProxyConfig = {
     httpProxy:  [+ string]  ; One or more proxy expressions as a UTF8 string
@@ -336,7 +515,7 @@ AuthProtocol = {
 }
 ```
 
-##### 3.1.1 Authentication Protocols
+##### 3.1.2 Authentication Protocols
 
 ```cddl
 EAPTLS = {
@@ -380,41 +559,13 @@ HostsEntry = {
 ```cddl
 DeviceManager = {
     url:     string      ; Device manager scheme name string and URI as a UTF-8 string
-    token:   bytes       ; Hex encoded HTTP Authentication token
-    caChain: bytes       ; DER encoded X509 certificate chain of trusted TLS root Certificate Authorities
-}
-
-```
-
-#### 3.3 Onboarding Status
-
-```cddl
-OnboardingStatus = {
-    code:    uint        ; 16-bit status code
-    message: string      ; Optional error message as a UTF-8 string
+    pubkey:  bytes       ; DER encoded X.509 Owner Service Elliptic Curve Public Key
+    anchors: bytes       ; DER encoded X.509 TLS root certificate authority trust anchors
 }
 ```
 
-Status codes less than 10,000 correspond to internal errors.
-
-| Code  | Description                                         |
-| :---: | --------------------------------------------------- |
-|   0   | Awaiting configurations                             |
-|  100  | Parsed configurations                               |
-|  200  | Network configuration applied successfully          |
-|  201  | Network authentication successful                   |
-|  202  | Network IP address received                         |
-|  300  | Device manager name resolution successful           |
-|  400  | Device Manager TO2 handshake successful             |
-|  500  | Host properties received by Device Manager          |
-|  600  | Firmware configuration received from Device Manager |
-|  700  | Firmware configuration applied                      |
-| 1000  | Onboarding Complete                                 |
-| 2XXX  | Network Configuration errors                        |
-| 3XXX  | Device Manager Configuration errors                 |
-| 4XXX  | Firmware Configuration errors                       |
-| 11XXX | Error sending host properties to device manager     |
-| 12XXX | Error retrieving firmware configuration             |
+> [!WARNING]
+> Elliptic Curve public keys are not post-quantum safe. The public key type will eventually be updated to use PQC algorithms.
 
 #### 3.4 Diagnostics
 
@@ -422,27 +573,47 @@ Status codes less than 10,000 correspond to internal errors.
 
 ```cddl
 NetworkState = {
-    addr:    biguint     ; 128-bit IP address (IPv4 or IPv6)
-    gateway: biguint     ; 128-bit IP address (IPv4 or IPv6)
-    dns:     [+ biguint] ; One or more 128-bit DNS server IP addresses
-    ntp:     [+ biguint] ; One or more 128-bit DNS server IP addresses
-    time:    int         ; 64-bit Unix epoch time
+    interfaces: [+ InterfaceConfig] ; Array of interfaces configurations
+    time:       int                 ; 64-bit Unix epoch system time
 }
+
+InterfaceConfig = {
+    ip:      ipv4-addr / ipv6-addr
+    bus:     string                 ; Hardware address/path as a UTF-8 string
+    mac:     bytes .size 6
+    gateway: ipv4-addr / ipv6-addr
+    dns:     [+ ipv4-addr / ipv6-addr]
+    ntp:     [+ ipv4-addr / ipv6-addr]
+}
+
+ipv4-addr = bytes .size 4
+ipv6-addr = bytes .size 16
 ```
 
-#### 3.5 FDO Voucher
+#### 3.5 State Diagnostics
+
+Additional state context can be retrieved with enhanced state diagnostics.
 
 ```cddl
-Voucher = {
-    tag:  uint   ; 8-bit tag
-    data: bytes
+Progress = {
+    steps: [+ Step]      ; Array of execution steps
+}
+
+Step = {
+    code:      uint16    ; State Code (< 1000)
+    status:    uint16
+    timestamp: uint64    ; Unix epoch time
+    error:     string    ; Optional error message as a UTF-8 string
 }
 ```
 
-| Code | Description  |
-| :--: | ------------ |
-|  1   | Error String |
-|  2   | Voucher      |
+| Status | Description                                      |
+| :----: | ------------------------------------------------ |
+|   0    | Not started                                      |
+|   1    | Not Applicable (e.g. no authentication required) |
+|   2    | In Progress                                      |
+|   3    | Completed                                        |
+|   4    | Errored                                          |
 
 ## Terms
 
@@ -451,3 +622,6 @@ Voucher = {
 | BLE     | Bluetooth Low Energy                        |
 | NFC     | Near Field Communication                    |
 | DPP     | (Wi-Fi Direct) Device Provisioning Protocol |
+
+[TO2Types]: https://fidoalliance.org/specs/FDO/FIDO-Device-Onboard-PS-v1.1-20220419/FIDO-Device-Onboard-PS-v1.1-20220419.html#TO2
+[voucher-cddl]: https://fidoalliance.org/specs/FDO/FIDO-Device-Onboard-RD-v1.1-20211214/FIDO-device-onboard-spec-v1.1-rd-20211214.html#OwnershipVoucher
