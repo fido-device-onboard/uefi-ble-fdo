@@ -69,9 +69,9 @@ sequenceDiagram
     ue ->>+ uefi: [BLE] Set Char 2.2<br/>{DeviceManagerConfig}
     uefi -->>- ue: {Ack}
 
-    ue ->>+ uefi: [BLE] Get Char 2.6<br/>{Voucher²}
+    ue ->>+ uefi: [BLE] Get Char 2.6
     note over ue,uefi: CBOR length provided within first 9 bytes
-    uefi -->>- ue: 
+    uefi -->>- ue: {Voucher²}
 
     uefi ->> uefi: Self-DI &<br/> Extend Voucher
 
@@ -98,7 +98,7 @@ sequenceDiagram
         uefi -) ue: [BLE] Notify: Char 2.3<br/>{State}
         end
         loop Every {Diagnostic Condition}
-        uefi -) ue: [BLE] Notify: Char 2.5<br/>{Diagnostic Data}
+        uefi -) ue: [BLE] Char 2.5 Notify:<br/>{Network Properties}<br/>{Network Diagnostics}<br/>{State Diagnostics}
         end
     and UEFI Protocol Requests
         uefi ->> uefi: Parse and apply network configuration
@@ -111,6 +111,14 @@ sequenceDiagram
             dm -->> uefi: Loader Module<br/>{EFI_IMAGE} or {EFI_URL}
             dm -->>- uefi: Loader Data Module<br/>{EFI_DATA}
         end
+
+        uefi ->> uefi: LoadImage()
+        note over uefi: EFI image loaded by FSIM or downloaded from URL
+        uefi ->> uefi: StartImage()
+
+        note over uefi: Until<br/>ExitBootServices() called<br/>or<br/>StartImage() returns
+        uefi ->>+ dm: TO2.Done
+        dm -->>- uefi: TO2.Done2
     end
     uefi ->> uefi: Boot via enhanced HTTP or payload from FSIM
 ```
@@ -135,8 +143,13 @@ stateDiagram-v2
 
 ## Flows
 
-> [!CAUTION]
-> The voucher is created using properties from the _Device Manager Config_, so any changes to the configuration will result in a new voucher.
+The only intended means of providing configuration and retrieving state, including diagnostics, is through the BLE central (e.g. mobile device). Once [FDO TO2.SetupDevice](https://fidoalliance.org/specs/FDO/FIDO-Device-Onboard-PS-v1.1-20220419/FIDO-Device-Onboard-PS-v1.1-20220419.html#to2deviceserviceinfoready-type-66) completes, the Device has established mutually authenticated communication with the Device Manager, however all state and diagnostics are intended to be provided over BLE because FSIMs do not provide a method for parallel asynchronous processes.
+
+The onboarding flow does not complete until either `ExitBootServices()` is called by the EFI Application (e.g. bootloader or operating system) or `StartImage()` returns and [TO2.Done2](https://fidoalliance.org/specs/FDO/FIDO-Device-Onboard-PS-v1.1-20220419/FIDO-Device-Onboard-PS-v1.1-20220419.html#to2done2-type-71) completes.
+
+`StartImage()` would return if the EFI Application is meant to perform and action and exit, as opposed to handing over control to an operating system. For example, this could be a lightweight operating system installer that copies an OS bootloader to the EFI system partition. Another example is an EFI application that configures HTTPS boot and sets it as the first boot target.
+
+Upon either `ExitBootServices()` being called or `StartImage()` returning, the TO2 process will complete. The FDO TO2 process is kept open to report potential errors as late in the onboarding process as possible. Notably, this does not handle errors that occur after the UEFI DXE phase, such as errors that may occur if an operating system hangs later in the boot process. Such errors should be handled by a watchdog.
 
 ```mermaid
 flowchart TD
@@ -158,13 +171,13 @@ flowchart TD
     end
 
     subgraph Onboarding
-    start --> netinit[State: Processing<br/>Stage: Network Init] 
-    
+    start --> netinit[State: Processing<br/>Stage: Network Init]
+
     netinit --> fdoConnect[State: Processing<br/>Stage: FDO TO2]
 
     fdoConnect --> connected@{ shape: diamond, label: "Success" }
     connected -- Yes --> fsim[State: Processing<br/>Stage: FDO FSIM]
-    
+
     fsim --> transferred@{ shape: diamond, label: "Success" }
     transferred -- Yes --> success@{ shape: dbl-circ, label: "Done" }
 
@@ -172,7 +185,7 @@ flowchart TD
     connected -- No -->error@{ shape: dbl-circ, label: "Error" }
 
     error --> init
-    
+
 
     end
 ```
@@ -209,16 +222,11 @@ From a design principle, there is a design correlation between RPCs and characte
 
 Many characteristics are `CBOR` encoded. See the [CBOR schemas](#3-cbor) section for data models.
 
-> [!IMPORTANT]
+> [!CAUTION]
 >
 > #### Payload Limitations
 >
-> Some characteristics contain variable-length CBOR-encoded data that may exceed the maximum attribute size of 512 octets. In order to "read" these attributes, set the Client Characteristic Configuration Descriptor (CCCD) to 0x0001. Because the value is a single deterministic-length CBOR item, it is possible to know when all data has been received by notifications. In order to "read" the characteristic again, set the CCCD to 0x0000 and then 0x0001.
->
-> Sending data that exceeds the MTU can be optimally achieved using L2CAP, however this eliminates common mobile devices such as those from Apple.  Accordingly, this specification uses chunking within the scope of GATT.
-
-TODO: Figure out if most stacks have a feature for server callbacks when CCCD value changes
-TODO: Add large CBOR payload transfer process
+> The current flows have a limitation of 512 bytes. Subsequent updates to the specification will address chunking for larger payloads.
 
 #### 2.1 Network Configuration
 
@@ -231,6 +239,9 @@ TODO: Add large CBOR payload transfer process
 |   CBOR    |   variable    |   Write    | [CBOR Encoded Network Configuration](#31-network-configuration) |
 
 #### 2.2 Device Manager Configuration
+
+> [!CAUTION]
+> The FDO Voucher is created using properties from the _Device Manager Config_, so any changes to the configuration will result in a new voucher.
 
 | Characteristic UUID                 |
 | ----------------------------------- |
@@ -252,7 +263,7 @@ For additional context and detail about current and prior states, use the [State
 
 | Data Type | Size (octets) | Properties | Description |
 | :-------: | :-----------: | :--------: | ----------- |
-|  uint16   |      1-2      |    Read    | State Code  |
+|  uint16   |      1-2      |   Notify   | State Code  |
 
 |  Code   | Description                                     |
 | :-----: | ----------------------------------------------- |
@@ -267,10 +278,10 @@ For additional context and detail about current and prior states, use the [State
 |   4XX   | FDO Ownership Transfer                          |
 | 460-467 | FDO TO2 [Message Types][TO2Types]               |
 |   5XX   | FDO TO2 [FSIMs](#fsim-codes)                    |
-|   570   | FDO TO2 Device to Device Manager - Done         |
-|   571   | FDO TO2 Device Manager to Device - Done         |
-|   901   | Loading Image                                   |
-|   902   | Starting Image                                  |
+|   901   | Loading Boot Image                              |
+|   902   | Starting Boot Image                             |
+|   970   | FDO TO2 Device to Device Manager - Done         |
+|   971   | FDO TO2 Device Manager to Device - Done         |
 |  1000   | Onboarding Complete                             |
 |  2XXX   | Network Configuration errors                    |
 |  3XXX   | Device Manager Configuration errors             |
@@ -285,42 +296,46 @@ For additional context and detail about current and prior states, use the [State
 
 ##### FSIM Codes
 
+FDO Service Info Modules (FSIM) are used to exchange information and execute instructions between the Device and Device Manager.
+
+This implementation MUST minimally allow for the loading and starting of an EFI Image. The last FSIM MAY start a bootloader, or it can apply configurations that apply to subsequent UEFI boot targets, such as booting over HTTP(S) or local disk.
+
 ###### Host Information
 
-| Code  | Description                                       |
-| :---: | ------------------------------------------------- |
-|  501  | Device Manager activating Service Info Module     |
-|  502  | Device sending host properties                    |
-|  503  | Device sending host properties checksum           |
-|  504  | Device Manager validated host properties checksum |
+| Code | Description                                       |
+| :--: | ------------------------------------------------- |
+| 501  | Device Manager activating Service Info Module     |
+| 502  | Device sending host properties                    |
+| 503  | Device sending host properties checksum           |
+| 504  | Device Manager validated host properties checksum |
 
 ###### Firmware Configuration
 
-| Code  | Description                                             |
-| :---: | ------------------------------------------------------- |
-|  510  | Device Manager activating Firmware Configuration Module |
-|  511  | Device receiving firmware configurations                |
-|  512  | Device Manager sending checksums                        |
-|  513  | Device validated checksums of firmware configurations   |
-|  514  | Applying firmware configurations                        |
+| Code | Description                                             |
+| :--: | ------------------------------------------------------- |
+| 510  | Device Manager activating Firmware Configuration Module |
+| 511  | Device receiving firmware configurations                |
+| 512  | Device Manager sending checksums                        |
+| 513  | Device validated checksums of firmware configurations   |
+| 514  | Applying firmware configurations                        |
 
 ###### Loader Image
 
-| Code  | Description                                      |
-| :---: | ------------------------------------------------ |
-|  520  | Device Manager activating Loader Module          |
-|  521  | Device receiving Loader Module data              |
-|  522  | Device Manager sending checksums                 |
-|  523  | Device validated checksums of Loader Module data |
+| Code | Description                                      |
+| :--: | ------------------------------------------------ |
+| 520  | Device Manager activating Loader Module          |
+| 521  | Device receiving Loader Module data              |
+| 522  | Device Manager sending checksums                 |
+| 523  | Device validated checksums of Loader Module data |
 
 ###### Loader Data
 
-| Code  | Description                                  |
-| :---: | -------------------------------------------- |
-|  530  | Device Manager activating Loader Data Module |
-|  531  | Device receiving Loader Data                 |
-|  532  | Device Manager sending checksums             |
-|  533  | Device validated checksums of Loader Data    |
+| Code | Description                                  |
+| :--: | -------------------------------------------- |
+| 530  | Device Manager activating Loader Data Module |
+| 531  | Device receiving Loader Data                 |
+| 532  | Device Manager sending checksums             |
+| 533  | Device validated checksums of Loader Data    |
 
 ##### 2.3.1 State interval
 
@@ -350,11 +365,11 @@ The structure of the voucher is defined directly in the [FDO 1.1 Voucher][vouche
 
 #### 2.5 Diagnostics
 
-Characteristics that may be need for additional troubleshooting or context.  The client will write the diagnostics bitfield during the `initialization` to determine when diagnostics will be sent, if at all.
+Characteristics that may be need for additional troubleshooting or context. The client will write the diagnostics bitfield during the `initialization` to determine when diagnostics will be sent, if at all.
 
-The value of each bitfield grouping defines the conditions for which the diagnostics should be sent.  For example, fields `0-1` for [Network Properties](#251-network-properties), a value of `0x1` means that the network properties will only be sent on error.
+The value of each bitfield grouping defines the conditions for which the diagnostics should be sent. For example, fields `0-1` for [Network Properties](#251-network-properties), a value of `0x1` means that the network properties will only be sent on error.
 
-All conditions share the same configured interval.  If the interval (bits 6-15) is zero (0) then it defaults to every three (3) seconds.
+All conditions share the same configured interval. If the interval (bits 6-15) is zero (0) then it defaults to every three (3) seconds.
 
 | Characteristic UUID                 |
 | ----------------------------------- |
@@ -483,15 +498,15 @@ A client (BT central) may send zero or many authentication protocols to the serv
 
 If multiple authentication types are received, the server shall attempt using the method in the following order:
 
-| Order | Type  | Protocol Name         | CDDL       | Description                                                     |
-| :---: | :---: | --------------------- | ---------- | --------------------------------------------------------------- |
-|  1.   | 0x01  | EAP-TLS               | EAPTLS     |                                                                 |
-|  2.   | 0x02  | EAP-TTLS              | EAPTLS     | Tunneled Transport Layer Security                               |
-|  3.   | 0x03  | EAP-PEAP GTC          | EAPPEAPGTC | Generic Token Card, one-time password                           |
-|  4.   | 0x04  | EAP-PEAP PAP          | EAPPEAPPAP | Password Authentication Protocol                                |
-|  5.   | 0x05  | EAP-PEAP EAP-MSCHAPv2 |            | Combination of EAP and MSCHAPv2                                 |
-|  6.   | 0x06  | EAP-PEAP MSCHAPv2     |            | Microsoft Challenge Handshake Authentication Protocol Version 2 |
-|  7.   | 0x09  | PSK                   | PSK        | Pre-shared Key, such as WPA2-Personal                           |
+| Order | Type | Protocol Name         | CDDL       | Description                                                     |
+| :---: | :--: | --------------------- | ---------- | --------------------------------------------------------------- |
+|  1.   | 0x01 | EAP-TLS               | EAPTLS     |                                                                 |
+|  2.   | 0x02 | EAP-TTLS              | EAPTLS     | Tunneled Transport Layer Security                               |
+|  3.   | 0x03 | EAP-PEAP GTC          | EAPPEAPGTC | Generic Token Card, one-time password                           |
+|  4.   | 0x04 | EAP-PEAP PAP          | EAPPEAPPAP | Password Authentication Protocol                                |
+|  5.   | 0x05 | EAP-PEAP EAP-MSCHAPv2 |            | Combination of EAP and MSCHAPv2                                 |
+|  6.   | 0x06 | EAP-PEAP MSCHAPv2     |            | Microsoft Challenge Handshake Authentication Protocol Version 2 |
+|  7.   | 0x09 | PSK                   | PSK        | Pre-shared Key, such as WPA2-Personal                           |
 
 ```cddl
 AuthProtocol = {
@@ -550,7 +565,7 @@ DeviceManager = {
 ```
 
 > [!WARNING]
-> Elliptic Curve public keys are not post-quantum safe.  The public key type will eventually be updated to use PQC algorithms.
+> Elliptic Curve public keys are not post-quantum safe. The public key type will eventually be updated to use PQC algorithms.
 
 #### 3.4 Diagnostics
 
