@@ -1,1 +1,4 @@
+.tmp-earthly-out/
 .vscode
+
+build/
